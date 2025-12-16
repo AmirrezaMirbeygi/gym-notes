@@ -85,6 +85,7 @@ import org.burnoutcrew.reorderable.rememberReorderableLazyListState
 import org.burnoutcrew.reorderable.reorderable
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 
@@ -112,7 +113,7 @@ data class ExerciseCard(
     val weightUnit: String = "kg",
     val primaryMuscleId: String? = null,          // preset muscle id OR null if custom
     val primaryMuscleCustomName: String? = null,  // used if primaryMuscleId is null
-    val weightHistory: MutableList<WeightEntry> = mutableListOf(), // ✅ timestamped
+    val weightHistory: MutableList<WeightEntry> = mutableListOf(),
     val notes: String = ""
 )
 
@@ -153,8 +154,6 @@ class MainActivity : ComponentActivity() {
 
 private const val PREFS_NAME = "gym_notes_prefs"
 private const val KEY_DATA = "workout_data"
-
-// Profile keys
 private const val KEY_PROFILE = "profile_json"
 
 private fun serializeDays(days: List<WorkoutDay>): String {
@@ -179,13 +178,14 @@ private fun serializeDays(days: List<WorkoutDay>): String {
                     put("primaryMuscleCustomName", ex.primaryMuscleCustomName)
                     put("notes", ex.notes)
 
-                    // ✅ timestamped history
                     val histArr = JSONArray()
                     ex.weightHistory.forEach { e ->
-                        histArr.put(JSONObject().apply {
-                            put("t", e.t)
-                            put("w", e.w.toDouble())
-                        })
+                        histArr.put(
+                            JSONObject().apply {
+                                put("t", e.t)
+                                put("w", e.w.toDouble())
+                            }
+                        )
                     }
                     put("weightHistory", histArr)
                 }
@@ -218,7 +218,6 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
             val primaryMuscleId = exObj.optString("primaryMuscleId").takeIf { it.isNotBlank() }
             val primaryMuscleCustomName = exObj.optString("primaryMuscleCustomName").takeIf { it.isNotBlank() }
 
-            // ✅ new history format
             val histArr = exObj.optJSONArray("weightHistory")
             val histList = mutableListOf<WeightEntry>()
             if (histArr != null) {
@@ -232,7 +231,7 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
 
             val weight = if (exObj.isNull("weight")) null else exObj.getDouble("weight").toFloat()
 
-            // Backward compat: if no history, seed from current weight (one entry) so charts work.
+            // Backward compat: seed history if missing but we have current weight
             if (histList.isEmpty() && weight != null) {
                 histList.add(WeightEntry(System.currentTimeMillis(), weight))
             }
@@ -405,38 +404,44 @@ private fun AppRoot() {
                 }
             },
             actions = {
-                IconButton(onClick = { gearOpen = true }) {
-                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                }
-                DropdownMenu(expanded = gearOpen, onDismissRequest = { gearOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("Profile") },
-                        onClick = {
-                            gearOpen = false
-                            showProfile = true
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Export data") },
-                        onClick = {
-                            gearOpen = false
-                            exportLauncher.launch("gym_notes_backup.json")
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Import data") },
-                        onClick = {
-                            gearOpen = false
-                            importLauncher.launch(arrayOf("application/json", "text/*"))
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Clear all data") },
-                        onClick = {
-                            gearOpen = false
-                            showClearConfirm = true
-                        }
-                    )
+                // IMPORTANT: Anchor DropdownMenu properly, otherwise it often "does nothing".
+                Box {
+                    IconButton(onClick = { gearOpen = true }) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+                    }
+                    DropdownMenu(
+                        expanded = gearOpen,
+                        onDismissRequest = { gearOpen = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Profile") },
+                            onClick = {
+                                gearOpen = false
+                                showProfile = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Export data") },
+                            onClick = {
+                                gearOpen = false
+                                exportLauncher.launch("gym_notes_backup.json")
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Import data") },
+                            onClick = {
+                                gearOpen = false
+                                importLauncher.launch(arrayOf("application/json", "text/*"))
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Clear all data") },
+                            onClick = {
+                                gearOpen = false
+                                showClearConfirm = true
+                            }
+                        )
+                    }
                 }
             }
         )
@@ -488,12 +493,14 @@ private fun AppRoot() {
 
                 is Screen.Progress -> ProgressScreen(
                     days = days,
+                    profile = profile,
                     onOpenGroup = { gid -> screen = Screen.ProgressGroupDetail(gid) }
                 )
 
                 is Screen.ProgressGroupDetail -> ProgressGroupDetailScreen(
                     groupId = s.groupId,
-                    days = days
+                    days = days,
+                    profile = profile
                 )
 
                 is Screen.DayDetail -> {
@@ -612,7 +619,7 @@ private fun ProfileDialog(
                 OutlinedTextField(
                     value = weightText,
                     onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) weightText = v },
-                    label = { Text("Weight (kg)") },
+                    label = { Text("Bodyweight (kg)") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
@@ -664,7 +671,7 @@ private fun ProfileDialog(
     )
 }
 
-// -------------------- WORKOUT HOME (Groups reorder, NO DOTS) --------------------
+// -------------------- WORKOUT HOME --------------------
 
 @Composable
 private fun WorkoutHome(
@@ -719,7 +726,7 @@ private fun WorkoutHome(
                             Card(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .detectReorder(reorderState) // drag anywhere
+                                    .detectReorder(reorderState)
                                     .clickable { onOpenDay(idx) },
                                 shape = RoundedCornerShape(12.dp)
                             ) {
@@ -820,7 +827,7 @@ private fun AddDayDialog(
     )
 }
 
-// -------------------- DAY DETAIL (Exercises reorder, NO DOTS) --------------------
+// -------------------- DAY DETAIL --------------------
 
 @Composable
 private fun DayDetailScreen(
@@ -878,7 +885,12 @@ private fun DayDetailScreen(
                                 shape = RoundedCornerShape(12.dp)
                             ) {
                                 Column(Modifier.padding(12.dp)) {
-                                    Text(ex.equipmentName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        ex.equipmentName,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                     Text("Muscle: ${displayPrimaryMuscle(ex)}", style = MaterialTheme.typography.bodySmall)
                                     Text("Sets x Reps: ${ex.sets} x ${ex.reps}", style = MaterialTheme.typography.bodySmall)
                                     ex.weight?.let { Text("Weight: $it ${ex.weightUnit}", style = MaterialTheme.typography.bodySmall) }
@@ -909,7 +921,7 @@ private fun DayDetailScreen(
     }
 }
 
-// -------------------- ADD EXERCISE (seed first history entry) --------------------
+// -------------------- ADD EXERCISE --------------------
 
 @Composable
 private fun AddExerciseDialog(
@@ -959,10 +971,7 @@ private fun AddExerciseDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
-                if (!parentGroupId.isNullOrBlank()) {
-                    val groupName = MuscleGroup.entries.firstOrNull { it.id == parentGroupId }?.displayName ?: "Group"
-                    Text("Group: $groupName", style = MaterialTheme.typography.bodySmall)
-                }
+                // IMPORTANT: do not ask / show group — parentGroupId already implies it.
 
                 OutlinedTextField(
                     value = equipmentName,
@@ -1077,7 +1086,7 @@ private fun AddExerciseDialog(
     )
 }
 
-// -------------------- EXERCISE EDIT (append history ONLY if weight changed) --------------------
+// -------------------- EXERCISE EDIT --------------------
 
 @Composable
 private fun ExerciseDetailScreen(
@@ -1121,7 +1130,9 @@ private fun ExerciseDetailScreen(
     }
 
     Column(
-        Modifier.fillMaxSize().padding(12.dp),
+        Modifier
+            .fillMaxSize()
+            .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (videoUri != null) {
@@ -1222,16 +1233,12 @@ private fun ExerciseDetailScreen(
                 val newWeight = weightText.toFloatOrNull()
 
                 val hist = exercise.weightHistory.toMutableList()
-
-                // ✅ only append when changed (and not null)
                 val oldWeight = exercise.weight
                 if (newWeight != null && (oldWeight == null || newWeight != oldWeight)) {
-                    // Also avoid duplicating the same weight as the last entry
                     val last = hist.lastOrNull()
                     if (last == null || last.w != newWeight) {
                         hist.add(WeightEntry(System.currentTimeMillis(), newWeight))
                     }
-                    // hard cap to avoid bloat
                     if (hist.size > 200) hist.subList(0, hist.size - 200).clear()
                 }
 
@@ -1253,14 +1260,136 @@ private fun ExerciseDetailScreen(
     }
 }
 
+// -------------------- SCORING --------------------
+
+private data class Calibration(
+    val p10Kg: Float,
+    val p90Kg: Float,
+    val addBodyweight: Boolean = false
+)
+
+private const val LB_TO_KG = 0.45359237f
+private fun mid(a: Float, b: Float): Float = (a + b) / 2f
+
+private val CAL: Map<String, Calibration> = mapOf(
+    // ---------------- Chest ----------------
+    Muscle.CHEST_PEC.id      to Calibration(mid(135f, 185f) * LB_TO_KG, mid(315f, 365f) * LB_TO_KG),
+    Muscle.CHEST_GENERAL.id  to Calibration(mid(135f, 185f) * LB_TO_KG, mid(315f, 365f) * LB_TO_KG),
+    Muscle.UPPER_CHEST.id    to Calibration(mid(135f, 185f) * LB_TO_KG, mid(315f, 365f) * LB_TO_KG),
+    Muscle.LOWER_CHEST.id    to Calibration(mid(135f, 185f) * LB_TO_KG, mid(315f, 365f) * LB_TO_KG),
+
+    // ---------------- Back ----------------
+    Muscle.UPPER_BACK.id           to Calibration(mid(115f, 135f) * LB_TO_KG, mid(400f, 450f) * LB_TO_KG),
+    Muscle.LATS.id                 to Calibration(mid(100f, 120f) * LB_TO_KG, mid(260f, 290f) * LB_TO_KG),
+    Muscle.LOWER_BACK_ERECTORS.id  to Calibration(mid(115f, 135f) * LB_TO_KG, mid(250f, 280f) * LB_TO_KG), // reuse upper-back row cal
+
+    // ---------------- Core ----------------
+    Muscle.CORE_ABS_OBLIQUES.id to Calibration(mid(60f, 80f) * LB_TO_KG, mid(180f, 220f) * LB_TO_KG),
+    Muscle.ABS.id               to Calibration(mid(60f, 80f) * LB_TO_KG, mid(180f, 220f) * LB_TO_KG),
+    Muscle.OBLIQUES.id          to Calibration(mid(60f, 80f) * LB_TO_KG, mid(180f, 220f) * LB_TO_KG),
+
+    // ---------------- Shoulders ----------------
+    Muscle.SHOULDERS_DELTS.id to Calibration(mid(65f, 85f) * LB_TO_KG, mid(175f, 200f) * LB_TO_KG),
+    Muscle.FRONT_DELTS.id     to Calibration(mid(65f, 85f) * LB_TO_KG, mid(175f, 200f) * LB_TO_KG),
+    Muscle.SIDE_DELTS.id      to Calibration(mid(65f, 85f) * LB_TO_KG, mid(175f, 200f) * LB_TO_KG),
+    Muscle.REAR_DELTS.id      to Calibration(mid(65f, 85f) * LB_TO_KG, mid(175f, 200f) * LB_TO_KG),
+
+    // ---------------- Arms ----------------
+    Muscle.TRICEPS.id   to Calibration(mid(135f, 155f) * LB_TO_KG, mid(275f, 300f) * LB_TO_KG),
+    Muscle.BICEPS.id    to Calibration(mid(135f, 155f) * LB_TO_KG, mid(150f, 175f) * LB_TO_KG),
+    Muscle.FOREARMS.id  to Calibration(mid(75f, 95f) * LB_TO_KG, mid(150f, 180f) * LB_TO_KG),
+
+    // ---------------- Legs ----------------
+    Muscle.QUADS.id       to Calibration(mid(135f, 185f) * LB_TO_KG, mid(400f, 450f) * LB_TO_KG),
+    Muscle.GLUTES_HAMS.id to Calibration(mid(185f, 250f) * LB_TO_KG, mid(495f, 550f) * LB_TO_KG),
+    Muscle.HAMS_ISO.id    to Calibration(mid(100f, 130f) * LB_TO_KG, mid(250f, 290f) * LB_TO_KG),
+    Muscle.HAMSTRINGS.id  to Calibration(mid(100f, 130f) * LB_TO_KG, mid(250f, 290f) * LB_TO_KG),
+    Muscle.GLUTES.id      to Calibration(mid(185f, 250f) * LB_TO_KG, mid(495f, 550f) * LB_TO_KG),
+    Muscle.CALVES.id      to Calibration(mid(180f, 250f) * LB_TO_KG, mid(500f, 650f) * LB_TO_KG),
+)
+
+
+private fun cardEffectiveLoadKg(ex: ExerciseCard, profile: Profile): Float? {
+    val w = ex.weight ?: return null
+    val reps = ex.reps.coerceAtLeast(1)
+    val sets = ex.sets.coerceAtLeast(1)
+
+    val base = w * (1f + reps / 30f)
+
+    val vol = sets * reps
+    val volFactor = (ln(1f + vol.toFloat()) / ln(31f)).coerceIn(0.2f, 1.4f) // 3x10 => ~1.0
+    var eff = base * volFactor
+
+    val muscleId = ex.primaryMuscleId ?: return eff
+    val cal = CAL[muscleId] ?: return eff
+    if (cal.addBodyweight) {
+        val bw = profile.weightKg ?: 80f
+        eff = (bw + w) * (1f + reps / 30f) * volFactor
+    }
+
+    return eff
+}
+
+private fun scoreFromCalibration(loadKg: Float, cal: Calibration): Int {
+    val x = loadKg.coerceAtLeast(0f)
+    val p10 = cal.p10Kg
+    val p90 = cal.p90Kg
+    if (p10 <= 0f || p90 <= p10) return 0
+
+    val s = when {
+        x <= 0f -> 0f
+        x < p10 -> (x / p10) * 10f
+        x <= p90 -> 10f + ((x - p10) / (p90 - p10)) * 80f
+        else -> {
+            val cap = p90 * 1.20f
+            val t = ((x - p90) / (cap - p90)).coerceIn(0f, 1f)
+            90f + 10f * t
+        }
+    }
+
+    return s.toInt().coerceIn(0, 100)
+}
+
+private fun computeMuscleScores(days: List<WorkoutDay>, profile: Profile): Map<String, Int> {
+    val perMuscle = mutableMapOf<String, MutableList<Int>>()
+
+    for (d in days) {
+        for (ex in d.exercises) {
+            val muscleId = ex.primaryMuscleId ?: continue
+            val cal = CAL[muscleId] ?: continue
+            val eff = cardEffectiveLoadKg(ex, profile) ?: continue
+
+            val score = scoreFromCalibration(eff, cal)
+            perMuscle.getOrPut(muscleId) { mutableListOf() }.add(score)
+        }
+    }
+
+    return perMuscle.mapValues { (_, scores) ->
+        if (scores.isEmpty()) 0 else (scores.sum().toFloat() / scores.size).toInt().coerceIn(0, 100)
+    }
+}
+
+private fun computeGroupScoresFromMuscles(muscleScores: Map<String, Int>): Map<String, Int> {
+    val out = mutableMapOf<String, Int>()
+    for (g in MuscleGroup.entries) {
+        val inGroup = Muscle.entries
+            .filter { it.groupId == g.id }
+            .mapNotNull { m -> muscleScores[m.id] }
+        out[g.id] = if (inGroup.isEmpty()) 0 else (inGroup.sum().toFloat() / inGroup.size).toInt().coerceIn(0, 100)
+    }
+    return out
+}
+
 // -------------------- PROGRESS --------------------
 
 @Composable
 private fun ProgressScreen(
     days: List<WorkoutDay>,
+    profile: Profile,
     onOpenGroup: (String) -> Unit
 ) {
-    val scores = remember(days) { computeGroupScores(days) }
+    val muscleScores = remember(days, profile) { computeMuscleScores(days, profile) }
+    val groupScores = remember(muscleScores) { computeGroupScoresFromMuscles(muscleScores) }
     var showBack by remember { mutableStateOf(false) }
 
     Column(
@@ -1270,102 +1399,25 @@ private fun ProgressScreen(
         Text("Muscle Group Scores", style = MaterialTheme.typography.titleMedium)
 
         BodyScoreFigureHybrid(
-            scores = scores,
+            scores = groupScores,
             showBack = showBack,
             onToggleSide = { showBack = !showBack }
         )
 
-        ScoreBars(
-            scores = scores,
-            onClickGroup = onOpenGroup
-        )
-    }
-}
-// -------------------- SCORE CALIBRATION (10th→90th linear) --------------------
+        ScoreBars(scores = groupScores, onClickGroup = onOpenGroup)
 
-private data class PercentileCal(val p10Kg: Float, val p90Kg: Float)
-
-/**
- * Uses your table:
- * score = 0 if x<=p10
- * score = 100 if x>=p90
- * else score = 10 + 80*(x-p10)/(p90-p10)
- *
- * NOTE: values are in KG and are MALE benchmarks.
- */
-private val MUSCLE_GROUP_CAL = mapOf(
-    // groupId must match your MuscleGroup ids
-    "chest" to PercentileCal(61f, 166f),        // 135–365 lb
-    "quads" to PercentileCal(61f, 204f),        // 135–450 lb
-    "back" to PercentileCal(52f, 127f),         // Bent-over row 115–280 lb (mapped to "back")
-    "lats" to PercentileCal(45f, 132f),         // 100–290 lb (only used if you actually have "lats" group)
-    "shoulders" to PercentileCal(30f, 91f),     // 65–200 lb
-    "triceps" to PercentileCal(61f, 136f),      // 135–300 lb
-    "biceps" to PercentileCal(25f, 79f),        // 55–175 lb
-    "calves" to PercentileCal(82f, 295f),       // 180–650 lb
-    "core" to PercentileCal(27f, 180f),         // 60–220 lb
-    "forearms" to PercentileCal(34f, 82f),      // 75–180 lb
-
-    // Your UI uses "legs" (not "quads"). We'll map legs to quads calibration for now.
-    "legs" to PercentileCal(61f, 204f),
-
-    // Your UI uses "arms" (not biceps/triceps). We'll map arms to a blended-ish calibration.
-    // For now, pick mid of biceps+triceps 10th and 90th.
-    "arms" to PercentileCal((25f + 61f) / 2f, (79f + 136f) / 2f)
-)
-
-private fun estimate1RM_Epley(weightKg: Float, reps: Int): Float {
-    val r = reps.coerceIn(1, 30)
-    return weightKg * (1f + r / 30f)
-}
-
-private fun scoreFrom10to90(oneRmKg: Float, cal: PercentileCal): Int {
-    val x = oneRmKg
-    val p10 = cal.p10Kg
-    val p90 = cal.p90Kg
-
-    return when {
-        x <= p10 -> 0
-        x >= p90 -> 100
-        else -> {
-            val t = (x - p10) / (p90 - p10)  // 0..1 between 10th and 90th
-            (10f + 80f * t).toInt().coerceIn(0, 100)
+        val hasCustom = remember(days) {
+            days.any { it.exercises.any { ex -> ex.primaryMuscleId == null && !ex.primaryMuscleCustomName.isNullOrBlank() } }
+        }
+        if (hasCustom) {
+            Text(
+                "Note: Custom muscles are not scored (no calibration).",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.alpha(0.7f)
+            )
         }
     }
 }
-
-private fun computeGroupScores(days: List<WorkoutDay>): Map<String, Int> {
-    // Best (max) estimated 1RM per groupId
-    val best1RmByGroup = mutableMapOf<String, Float>()
-
-    for (d in days) {
-        for (ex in d.exercises) {
-            val groupId = ex.primaryMuscleId?.let { id ->
-                Muscle.entries.firstOrNull { it.id == id }?.groupId
-            } ?: d.groupId
-
-            if (groupId.isNullOrBlank()) continue
-
-            val cal = MUSCLE_GROUP_CAL[groupId] ?: continue
-
-            val w = ex.weight ?: continue
-            if (w <= 0f || ex.reps <= 0) continue
-
-            val oneRm = estimate1RM_Epley(w, ex.reps)
-            val prevBest = best1RmByGroup[groupId] ?: 0f
-            if (oneRm > prevBest) best1RmByGroup[groupId] = oneRm
-        }
-    }
-
-    // Produce a score for every MuscleGroup entry (default 0 if no data / no calibration)
-    return MuscleGroup.entries.associate { g ->
-        val cal = MUSCLE_GROUP_CAL[g.id]
-        val oneRm = best1RmByGroup[g.id] ?: 0f
-        val score = if (cal == null) 0 else scoreFrom10to90(oneRm, cal)
-        g.id to score
-    }
-}
-
 
 @Composable
 private fun ScoreBars(
@@ -1395,14 +1447,16 @@ private fun ScoreBars(
     }
 }
 
-// -------------------- PROGRESS GROUP DETAIL (muscles + charts) --------------------
+// -------------------- PROGRESS GROUP DETAIL --------------------
 
 @Composable
 private fun ProgressGroupDetailScreen(
     groupId: String,
-    days: List<WorkoutDay>
+    days: List<WorkoutDay>,
+    profile: Profile
 ) {
     val muscles = remember(groupId) { musclesForGroup(groupId) }
+    val muscleScores = remember(days, profile) { computeMuscleScores(days, profile) }
 
     Column(
         Modifier.fillMaxSize().padding(12.dp),
@@ -1413,9 +1467,18 @@ private fun ProgressGroupDetailScreen(
         LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(muscles, key = { it.id }) { m ->
                 val entries = remember(days, m.id) { collectWeightHistoryForMuscle(days, m.id) }
+                val score = muscleScores[m.id]
+
                 Card(Modifier.fillMaxWidth()) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(m.displayName, style = MaterialTheme.typography.titleMedium)
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                            Text(m.displayName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                            Text(text = (score?.toString() ?: "—"), style = MaterialTheme.typography.titleMedium)
+                        }
+
                         if (entries.isEmpty()) {
                             Text("No history yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.alpha(0.7f))
                         } else {
@@ -1434,9 +1497,7 @@ private fun collectWeightHistoryForMuscle(days: List<WorkoutDay>, muscleId: Stri
     val all = mutableListOf<WeightEntry>()
     for (d in days) {
         for (ex in d.exercises) {
-            if (ex.primaryMuscleId == muscleId) {
-                all.addAll(ex.weightHistory)
-            }
+            if (ex.primaryMuscleId == muscleId) all.addAll(ex.weightHistory)
         }
     }
     return all.sortedBy { it.t }
@@ -1470,7 +1531,6 @@ private fun WeightHistoryChart(
             return (h - pad) - n * (h - 2f * pad)
         }
 
-        // axes baseline
         drawLine(
             color = onSurface.copy(alpha = 0.15f),
             start = Offset(pad, h - pad),
@@ -1478,7 +1538,6 @@ private fun WeightHistoryChart(
             strokeWidth = 2f
         )
 
-        // line
         for (i in 0 until entries.size - 1) {
             val a = entries[i]
             val b = entries[i + 1]
@@ -1490,211 +1549,11 @@ private fun WeightHistoryChart(
             )
         }
 
-        // points
         entries.forEach { e ->
             drawCircle(
                 color = onSurface.copy(alpha = 0.85f),
                 radius = 4f,
                 center = Offset(x(e.t), y(e.w))
-            )
-        }
-    }
-}
-
-// -------------------- FIGURE --------------------
-
-@Composable
-private fun BodyScoreFigureHybrid(
-    scores: Map<String, Int>,
-    showBack: Boolean,
-    onToggleSide: () -> Unit
-) {
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val primary = MaterialTheme.colorScheme.primary
-
-    Card(Modifier.fillMaxWidth()) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height(240.dp)
-                .padding(12.dp)
-        ) {
-            Canvas(Modifier.fillMaxSize().align(Alignment.Center)) {
-                val w = size.width
-                val h = size.height
-                val cx = w / 2f
-
-                fun score01(id: String): Float = ((scores[id] ?: 0).coerceIn(0, 100) / 100f)
-
-                val chest = score01("chest")
-                val back = score01("back")
-                val shoulders = score01("shoulders")
-                val arms = score01("arms")
-                val legs = score01("legs")
-                val core = score01("core")
-
-                val shoulderScale = 1f + shoulders * 0.35f
-                val chestBackScale = 1f + max(chest, back) * 0.25f
-                val waistScale = 1f - core * 0.15f
-                val armScale = 1f + arms * 0.30f
-                val legScale = 1f + legs * 0.30f
-
-                val headR = min(w, h) * 0.06f
-                val shoulderY = headR * 3.2f
-                val chestY = h * 0.44f
-                val waistY = h * 0.62f
-                val hipY = h * 0.72f
-                val footY = h * 0.95f
-
-                val baseShoulderHalf = w * 0.18f
-                val baseChestHalf = w * 0.16f
-                val baseWaistHalf = w * 0.13f
-                val baseHipHalf = w * 0.15f
-
-                val shoulderHalf = baseShoulderHalf * shoulderScale
-                val chestHalf = baseChestHalf * chestBackScale
-                val waistHalf = baseWaistHalf * waistScale
-                val hipHalf = baseHipHalf * legScale
-
-                val armX = shoulderHalf + w * 0.06f
-                val armTopY = shoulderY + headR * 0.2f
-                val armBottomY = waistY
-                val armThickness = w * 0.03f * armScale
-
-                val legGap = w * 0.05f
-                val legHalf = max(1f, (hipHalf - legGap) / 2f)
-                val legThickness = legHalf * 0.90f
-
-                drawCircle(
-                    color = onSurface.copy(alpha = 0.18f),
-                    radius = headR,
-                    center = Offset(cx, headR * 1.3f)
-                )
-
-                val torsoPath = Path().apply {
-                    moveTo(cx - shoulderHalf, shoulderY)
-                    lineTo(cx + shoulderHalf, shoulderY)
-                    lineTo(cx + chestHalf, chestY)
-                    lineTo(cx + waistHalf, waistY)
-                    lineTo(cx + hipHalf, hipY)
-                    lineTo(cx - hipHalf, hipY)
-                    lineTo(cx - waistHalf, waistY)
-                    lineTo(cx - chestHalf, chestY)
-                    close()
-                }
-
-                drawPath(torsoPath, onSurface.copy(alpha = 0.12f), style = Fill)
-                drawPath(torsoPath, onSurface.copy(alpha = 0.18f), style = Stroke(width = 2f))
-
-                drawLine(
-                    color = onSurface.copy(alpha = 0.16f),
-                    start = Offset(cx - armX, armTopY),
-                    end = Offset(cx - armX, armBottomY),
-                    strokeWidth = armThickness
-                )
-                drawLine(
-                    color = onSurface.copy(alpha = 0.16f),
-                    start = Offset(cx + armX, armTopY),
-                    end = Offset(cx + armX, armBottomY),
-                    strokeWidth = armThickness
-                )
-
-                val leftLegX = cx - legGap / 2f - legHalf
-                val rightLegX = cx + legGap / 2f + legHalf
-
-                drawLine(
-                    color = onSurface.copy(alpha = 0.16f),
-                    start = Offset(leftLegX, hipY),
-                    end = Offset(leftLegX, footY),
-                    strokeWidth = legThickness
-                )
-                drawLine(
-                    color = onSurface.copy(alpha = 0.16f),
-                    start = Offset(rightLegX, hipY),
-                    end = Offset(rightLegX, footY),
-                    strokeWidth = legThickness
-                )
-
-                fun heatAlpha(v: Float): Float = (0.06f + v * 0.22f).coerceIn(0.06f, 0.30f)
-
-                val emphasizeChest = !showBack
-
-                val shoulderPath = Path().apply {
-                    moveTo(cx - shoulderHalf, shoulderY)
-                    lineTo(cx + shoulderHalf, shoulderY)
-                    lineTo(cx + chestHalf, chestY)
-                    lineTo(cx - chestHalf, chestY)
-                    close()
-                }
-                drawPath(shoulderPath, primary.copy(alpha = heatAlpha(shoulders)), style = Fill)
-
-                val chestBackPath = Path().apply {
-                    moveTo(cx - chestHalf, chestY)
-                    lineTo(cx + chestHalf, chestY)
-                    lineTo(cx + waistHalf, waistY)
-                    lineTo(cx - waistHalf, waistY)
-                    close()
-                }
-                drawPath(
-                    chestBackPath,
-                    primary.copy(alpha = heatAlpha(if (emphasizeChest) chest else back)),
-                    style = Fill
-                )
-
-                val corePath = Path().apply {
-                    moveTo(cx - waistHalf, waistY)
-                    lineTo(cx + waistHalf, waistY)
-                    lineTo(cx + hipHalf, hipY)
-                    lineTo(cx - hipHalf, hipY)
-                    close()
-                }
-                drawPath(corePath, primary.copy(alpha = heatAlpha(core)), style = Fill)
-
-                drawLine(
-                    color = primary.copy(alpha = heatAlpha(arms)),
-                    start = Offset(cx - armX, armTopY),
-                    end = Offset(cx - armX, armBottomY),
-                    strokeWidth = armThickness * 1.05f
-                )
-                drawLine(
-                    color = primary.copy(alpha = heatAlpha(arms)),
-                    start = Offset(cx + armX, armTopY),
-                    end = Offset(cx + armX, armBottomY),
-                    strokeWidth = armThickness * 1.05f
-                )
-
-                drawLine(
-                    color = primary.copy(alpha = heatAlpha(legs)),
-                    start = Offset(leftLegX, hipY),
-                    end = Offset(leftLegX, footY),
-                    strokeWidth = legThickness * 1.05f
-                )
-                drawLine(
-                    color = primary.copy(alpha = heatAlpha(legs)),
-                    start = Offset(rightLegX, hipY),
-                    end = Offset(rightLegX, footY),
-                    strokeWidth = legThickness * 1.05f
-                )
-            }
-
-            IconButton(
-                onClick = onToggleSide,
-                modifier = Modifier.align(Alignment.TopEnd)
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.FlipCameraAndroid,
-                    contentDescription = if (showBack) "Show front" else "Show back"
-                )
-            }
-
-            // If you want ZERO text, delete this.
-            Text(
-                text = if (showBack) "Back" else "Front",
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier
-                    .align(Alignment.TopStart)
-                    .padding(top = 2.dp)
-                    .alpha(0.65f)
             )
         }
     }

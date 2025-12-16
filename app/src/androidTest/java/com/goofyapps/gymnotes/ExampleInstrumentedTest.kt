@@ -1,4 +1,4 @@
-package com.example.gymnotes
+package com.goofyapps.gymnotes
 
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.ext.junit.runners.AndroidJUnit4

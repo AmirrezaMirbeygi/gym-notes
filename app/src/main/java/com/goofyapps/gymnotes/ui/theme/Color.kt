@@ -1,4 +1,4 @@
-package com.example.gymnotes.ui.theme
+package com.goofyapps.gymnotes.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

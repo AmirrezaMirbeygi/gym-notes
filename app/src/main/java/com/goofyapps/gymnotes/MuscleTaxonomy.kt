@@ -1,4 +1,4 @@
-package com.example.gymnotes
+package com.goofyapps.gymnotes
 
 const val CUSTOM_ID = "__custom__"
 
@@ -9,7 +9,7 @@ enum class MuscleGroup(
     CHEST("chest", "Chest"),
     BACK("back", "Back"),
     CORE("core", "Core"),
-    SHOULDERS("shoulders", "Sarshoone"),
+    SHOULDERS("shoulders", "Shoulders"),
     ARMS("arms", "Arms"),
     LEGS("legs", "Legs");
 }
@@ -25,7 +25,7 @@ enum class Muscle(
     LOWER_CHEST("lower_chest", "chest", "Lower Chest"),
 
     // Back
-    LATS("lats", "back", "Zire Baghal (Lats)"),
+    LATS("lats", "back", "Lats"),
     UPPER_BACK("upper_back", "back", "Upper Back"),
     LOWER_BACK("lower_back", "back", "Lower Back"),
 
@@ -39,8 +39,8 @@ enum class Muscle(
     REAR_DELTS("rear_delts", "shoulders", "Rear Delts"),
 
     // Arms
-    BICEPS("biceps", "arms", "Jolo Bazoo (Biceps)"),
-    TRICEPS("triceps", "arms", "Posht Bazoo (Triceps)"),
+    BICEPS("biceps", "arms", "Biceps"),
+    TRICEPS("triceps", "arms", "Triceps"),
 
     // Legs
     QUADS("quads", "legs", "Quads"),
@@ -50,4 +50,4 @@ enum class Muscle(
 }
 
 fun musclesForGroup(groupId: String): List<Muscle> =
-    Muscle.values().filter { it.groupId == groupId }
+    Muscle.entries.filter { it.groupId == groupId }

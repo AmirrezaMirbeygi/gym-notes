@@ -1,4 +1,4 @@
-package com.example.gymnotes
+package com.goofyapps.gymnotes
 
 import org.junit.Test
 

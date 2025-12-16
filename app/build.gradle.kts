@@ -59,4 +59,10 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     implementation("org.burnoutcrew.composereorderable:reorderable:0.9.6")
     implementation("io.github.sceneview:sceneview:2.1.0")
+    
+    // Gemini AI
+    implementation("com.google.ai.client.generativeai:generativeai:0.2.2")
+    
+    // Image loading
+    implementation("io.coil-kt:coil-compose:2.5.0")
 }

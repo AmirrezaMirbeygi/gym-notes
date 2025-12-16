@@ -5,6 +5,7 @@ package com.goofyapps.gymnotes
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Bundle
@@ -34,14 +35,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.ShowChart
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -86,6 +89,8 @@ import org.burnoutcrew.reorderable.rememberReorderableLazyListState
 import org.burnoutcrew.reorderable.reorderable
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlinx.coroutines.launch
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
@@ -142,6 +147,7 @@ sealed class Screen {
 
     // NEW
     data object GoalMode : Screen()
+    data object Gymini : Screen()
 }
 
 // -------------------- ACTIVITY --------------------
@@ -161,6 +167,10 @@ private const val KEY_DATA = "workout_data"
 private const val KEY_PROFILE = "profile_json"
 private const val KEY_GOALS = "goals_json"
 private const val KEY_UNIT_SYSTEM = "unit_system"
+private const val KEY_AI_FRONT_PHOTO = "ai_front_photo_uri"
+private const val KEY_AI_BACK_PHOTO = "ai_back_photo_uri"
+private const val KEY_AI_GENERATED_IMAGE = "ai_generated_image_uri"
+private const val KEY_SHOW_AI_IMAGE = "show_ai_image_toggle"
 
 private enum class UnitSystem { METRIC, IMPERIAL }
 
@@ -538,8 +548,14 @@ private fun AppRoot() {
             NavigationBarItem(
                 selected = screen is Screen.Progress || screen is Screen.ProgressGroupDetail || screen is Screen.GoalMode,
                 onClick = { screen = Screen.Progress },
-                icon = { Icon(Icons.Filled.ShowChart, contentDescription = "Progress") },
+                icon = { Icon(Icons.AutoMirrored.Filled.ShowChart, contentDescription = "Progress") },
                 label = { Text("Progress") }
+            )
+            NavigationBarItem(
+                selected = screen is Screen.Gymini,
+                onClick = { screen = Screen.Gymini },
+                icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = "Gymini") },
+                label = { Text("Gymini") }
             )
         }
     }
@@ -560,6 +576,7 @@ private fun AppRoot() {
                 is Screen.ExerciseDetail -> topBar("Edit Exercise", showBack = true) {
                     screen = Screen.DayDetail(s.dayIndex)
                 }.invoke()
+                is Screen.Gymini -> topBar("Gymini", showBack = false).invoke()
             }
         },
         bottomBar = bottomBar
@@ -580,6 +597,12 @@ private fun AppRoot() {
                     unitSystem = unitSystem,
                     onOpenGroup = { gid -> screen = Screen.ProgressGroupDetail(gid) },
                     onOpenGoalMode = { screen = Screen.GoalMode }
+                )
+                
+                is Screen.Gymini -> AIScreen(
+                    days = days,
+                    profile = profile,
+                    onBack = { screen = Screen.Progress }
                 )
 
                 is Screen.GoalMode -> GoalModeScreen(
@@ -1625,18 +1648,44 @@ private fun ProgressScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Row(
-            Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text("Muscle Group Scores", style = MaterialTheme.typography.titleMedium)
-            Button(onClick = onOpenGoalMode) { Text("Goal mode") }
+        val context = androidx.compose.ui.platform.LocalContext.current
+        var showAIImage by remember { mutableStateOf(loadShowAIImage(context)) }
+        var aiImageUri by remember { mutableStateOf<Uri?>(loadAIGeneratedImageUri(context)) }
+        
+        // Reload AI image URI when it might have changed (e.g., from Gymini tab)
+        LaunchedEffect(Unit) {
+            aiImageUri = loadAIGeneratedImageUri(context)
         }
-
+        
         BodyScoreFigure3D(
             scores = groupScores,
-            bodyFatPercent = bf
+            bodyFatPercent = bf,
+            aiImageUri = if (showAIImage) aiImageUri else null,
+            overlayContent = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Toggle button for AI image (only show if AI image exists)
+                    if (aiImageUri != null) {
+                        IconButton(
+                            onClick = { 
+                                val newValue = !showAIImage
+                                showAIImage = newValue
+                                saveShowAIImage(context, newValue)
+                            }
+                        ) {
+                            Icon(
+                                Icons.Filled.AutoAwesome,
+                                contentDescription = if (showAIImage) "Show 3D" else "Show AI",
+                                tint = if (showAIImage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
+                    }
+                    // Goal button
+                    Button(onClick = onOpenGoalMode) { Text("Goal") }
+                }
+            }
         )
 
         ScoreBarsWithBodyFat(
@@ -1798,6 +1847,15 @@ private fun GoalModeScreen(
 
     val scroll = rememberScrollState()
 
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showAIImage by remember { mutableStateOf(loadShowAIImage(context)) }
+    var aiImageUri by remember { mutableStateOf<Uri?>(loadAIGeneratedImageUri(context)) }
+    
+    // Reload AI image URI when it might have changed (e.g., from Gymini tab)
+    LaunchedEffect(Unit) {
+        aiImageUri = loadAIGeneratedImageUri(context)
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -1807,7 +1865,26 @@ private fun GoalModeScreen(
     ) {
         BodyScoreFigure3D(
             scores = goalScoresInt,
-            bodyFatPercent = goalBodyFat
+            bodyFatPercent = goalBodyFat,
+            aiImageUri = if (showAIImage) aiImageUri else null,
+            overlayContent = {
+                // Toggle button for AI image (only show if AI image exists)
+                if (aiImageUri != null) {
+                    IconButton(
+                        onClick = { 
+                            val newValue = !showAIImage
+                            showAIImage = newValue
+                            saveShowAIImage(context, newValue)
+                        }
+                    ) {
+                        Icon(
+                            Icons.Filled.AutoAwesome,
+                            contentDescription = if (showAIImage) "Show 3D" else "Show AI",
+                            tint = if (showAIImage) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            }
         )
 
         Card(Modifier.fillMaxWidth()) {
@@ -1975,6 +2052,384 @@ private fun WeightHistoryChart(
                 radius = 4f,
                 center = Offset(x(e.t), y(e.w))
             )
+        }
+    }
+}
+
+// -------------------- AI PHOTO PERSISTENCE --------------------
+
+private fun saveAIPhotoUri(context: Context, isFront: Boolean, uri: Uri?) {
+    val key = if (isFront) KEY_AI_FRONT_PHOTO else KEY_AI_BACK_PHOTO
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(key, uri?.toString())
+        .apply()
+}
+
+private fun loadAIPhotoUri(context: Context, isFront: Boolean): Uri? {
+    val key = if (isFront) KEY_AI_FRONT_PHOTO else KEY_AI_BACK_PHOTO
+    val uriString = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(key, null)
+    return uriString?.let { Uri.parse(it) }
+}
+
+private fun saveShowAIImage(context: Context, show: Boolean) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putBoolean(KEY_SHOW_AI_IMAGE, show)
+        .apply()
+}
+
+private fun loadShowAIImage(context: Context): Boolean {
+    return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getBoolean(KEY_SHOW_AI_IMAGE, false)
+}
+
+private fun loadAIGeneratedImageUri(context: Context): Uri? {
+    val uriString = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_AI_GENERATED_IMAGE, null)
+    return uriString?.let { Uri.parse(it) }
+}
+
+// -------------------- AI SCREEN --------------------
+
+@Composable
+private fun AIScreen(
+    days: List<WorkoutDay>,
+    profile: Profile,
+    onBack: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val aiService = remember { GeminiAIService(context) }
+    
+    var frontPhotoUri by remember { mutableStateOf<Uri?>(loadAIPhotoUri(context, isFront = true)) }
+    var backPhotoUri by remember { mutableStateOf<Uri?>(loadAIPhotoUri(context, isFront = false)) }
+    
+    var isLoading by remember { mutableStateOf(false) }
+    var aiSuggestions by remember { mutableStateOf<String?>(null) }
+    var aiError by remember { mutableStateOf<String?>(null) }
+    var aiGeneratedImageUri by remember { mutableStateOf<Uri?>(null) }
+    
+    val frontPhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            frontPhotoUri = it
+            saveAIPhotoUri(context, isFront = true, it)
+        }
+    }
+    
+    val backPhotoLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        uri?.let {
+            backPhotoUri = it
+            saveAIPhotoUri(context, isFront = false, it)
+        }
+    }
+    
+    val muscleScores = remember(days, profile) { computeMuscleScores(days, profile) }
+    val groupScores = remember(muscleScores) { computeGroupScoresFromMuscles(muscleScores) }
+    val bf = (profile.bodyFatPct ?: 15f).coerceIn(5f, 30f)
+    
+    // Track previous scores for comparison
+    var previousScores by remember { mutableStateOf<Map<String, Int>>(groupScores) }
+    
+    // Auto-generate visualization when scores change (if photos exist)
+    LaunchedEffect(groupScores, bf) {
+        if (frontPhotoUri != null && backPhotoUri != null && !isLoading && groupScores != previousScores) {
+            isLoading = true
+            aiError = null
+            aiService.generateUpdatedMuscleMassVisualization(
+                frontPhotoUri = frontPhotoUri,
+                backPhotoUri = backPhotoUri,
+                newScores = groupScores,
+                previousScores = previousScores,
+                bodyFatPercent = bf
+            ).fold(
+                onSuccess = { imageUri ->
+                    imageUri?.let { uri ->
+                        aiGeneratedImageUri = uri
+                        // Save generated image URI
+                        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                            .edit()
+                            .putString(KEY_AI_GENERATED_IMAGE, uri.toString())
+                            .apply()
+                    }
+                    previousScores = groupScores
+                    isLoading = false
+                },
+                onFailure = { e ->
+                    aiError = "Failed to generate visualization: ${e.message}"
+                    isLoading = false
+                }
+            )
+        }
+    }
+    
+    val scroll = rememberScrollState()
+    
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            "AI Analysis & Suggestions",
+            style = MaterialTheme.typography.titleLarge
+        )
+        
+        // Photo Upload Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Body Photos",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                
+                Text(
+                    "Upload front and back full body photos for AI analysis. This is a one-time setup.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // Front Photo
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (frontPhotoUri != null) {
+                            var bitmap by remember(frontPhotoUri) { mutableStateOf<Bitmap?>(null) }
+                            
+                            LaunchedEffect(frontPhotoUri) {
+                                bitmap = runCatching {
+                                    context.contentResolver.openInputStream(frontPhotoUri!!)
+                                        ?.use { BitmapFactory.decodeStream(it) }
+                                }.getOrNull()
+                            }
+                            
+                            bitmap?.let {
+                                Image(
+                                    bitmap = it.asImageBitmap(),
+                                    contentDescription = "Front photo",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            }
+                            
+                            Button(onClick = { frontPhotoLauncher.launch("image/*") }) {
+                                Text("Change Front Photo")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { frontPhotoLauncher.launch("image/*") },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Upload Front Photo")
+                            }
+                        }
+                    }
+                    
+                    // Back Photo
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (backPhotoUri != null) {
+                            var bitmap by remember(backPhotoUri) { mutableStateOf<Bitmap?>(null) }
+                            
+                            LaunchedEffect(backPhotoUri) {
+                                bitmap = runCatching {
+                                    context.contentResolver.openInputStream(backPhotoUri!!)
+                                        ?.use { BitmapFactory.decodeStream(it) }
+                                }.getOrNull()
+                            }
+                            
+                            bitmap?.let {
+                                Image(
+                                    bitmap = it.asImageBitmap(),
+                                    contentDescription = "Back photo",
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(200.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                )
+                            }
+                            
+                            Button(onClick = { backPhotoLauncher.launch("image/*") }) {
+                                Text("Change Back Photo")
+                            }
+                        } else {
+                            OutlinedButton(
+                                onClick = { backPhotoLauncher.launch("image/*") },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text("Upload Back Photo")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // AI Generated Visualization
+        aiGeneratedImageUri?.let { imageUri ->
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text(
+                        "AI Generated Muscle Mass Visualization",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    
+                    var bitmap by remember(imageUri) { mutableStateOf<Bitmap?>(null) }
+                    
+                    LaunchedEffect(imageUri) {
+                        bitmap = runCatching {
+                            context.contentResolver.openInputStream(imageUri)
+                                ?.use { BitmapFactory.decodeStream(it) }
+                        }.getOrNull()
+                    }
+                    
+                    bitmap?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "AI generated muscle mass visualization",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(400.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                        )
+                    } ?: run {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(400.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Loading visualization...")
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Analyze Button
+        val coroutineScope = rememberCoroutineScope()
+        if (frontPhotoUri != null && backPhotoUri != null) {
+            Button(
+                onClick = {
+                    isLoading = true
+                    aiError = null
+                    aiSuggestions = null
+                    
+                    // Analyze photos and get initial suggestions
+                    coroutineScope.launch {
+                        aiService.analyzeBodyPhotosAndGenerateMuscleMass(
+                            frontPhotoUri = frontPhotoUri!!,
+                            backPhotoUri = backPhotoUri!!,
+                            currentScores = groupScores,
+                            bodyFatPercent = bf
+                        ).fold(
+                            onSuccess = { result ->
+                                aiSuggestions = result.analysisText
+                                aiGeneratedImageUri = result.generatedImageUri
+                                // Save generated image URI
+                                result.generatedImageUri?.let { uri ->
+                                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                                        .edit()
+                                        .putString(KEY_AI_GENERATED_IMAGE, uri.toString())
+                                        .apply()
+                                }
+                                isLoading = false
+                            },
+                            onFailure = { e ->
+                                aiError = "Analysis failed: ${e.message}"
+                                isLoading = false
+                            }
+                        )
+                        
+                        // Get workout suggestions
+                        aiService.getWorkoutSuggestions(
+                            days = days,
+                            currentScores = groupScores,
+                            bodyFatPercent = bf
+                        ).fold(
+                            onSuccess = { suggestions ->
+                                aiSuggestions = (aiSuggestions ?: "") + "\n\n" + suggestions
+                            },
+                            onFailure = { /* Ignore */ }
+                        )
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = !isLoading
+            ) {
+                if (isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                } else {
+                    Text("Analyze with AI")
+                }
+            }
+        }
+        
+        // Loading indicator
+        if (isLoading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+        
+        // Error message
+        aiError?.let { error ->
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+            ) {
+                Text(
+                    error,
+                    modifier = Modifier.padding(16.dp),
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+            }
+        }
+        
+        // AI Suggestions
+        aiSuggestions?.let { suggestions ->
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        "AI Analysis & Suggestions",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Text(
+                        suggestions,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
         }
     }
 }

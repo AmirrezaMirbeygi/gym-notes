@@ -1,24 +1,30 @@
 package com.goofyapps.gymnotes
 
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Log
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import io.github.sceneview.Scene
 import io.github.sceneview.math.Position
 import io.github.sceneview.math.Rotation
@@ -35,8 +41,22 @@ import kotlin.math.abs
 @Composable
 fun BodyScoreFigure3D(
     scores: Map<String, Int>,
-    bodyFatPercent: Float = 15f // 5..30
+    bodyFatPercent: Float = 15f, // 5..30
+    aiImageUri: Uri? = null, // AI generated image to show instead of 3D
+    overlayContent: @Composable () -> Unit = {}
 ) {
+    val context = LocalContext.current
+    var aiBitmap by remember(aiImageUri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    
+    // Load AI image if provided
+    LaunchedEffect(aiImageUri) {
+        aiBitmap = aiImageUri?.let { uri ->
+            runCatching {
+                context.contentResolver.openInputStream(uri)
+                    ?.use { BitmapFactory.decodeStream(it) }
+            }.getOrNull()
+        }
+    }
     val engine = rememberEngine()
     val modelLoader = rememberModelLoader(engine)
     val environmentLoader = rememberEnvironmentLoader(engine)
@@ -44,8 +64,8 @@ fun BodyScoreFigure3D(
     // IMPORTANT: do NOT use rememberCameraNode() -> it can crash on dispose (NPE in destroy()).
     val cameraNode = remember(engine) { 
         CameraNode(engine).apply {
-            // Set initial camera position - adjust these values
-            position = Position(x = 0.0f, y = 1.5f, z = 0.0f)
+            // Set initial camera position - adjust these values to move camera
+            position = Position(x = 0.0f, y = 1.5f, z = 4.0f)
             lookAt(Position(x = 0.0f, y = 0.0f, z = 0.0f))
         }
     }
@@ -80,27 +100,50 @@ fun BodyScoreFigure3D(
                 .fillMaxWidth()
                 .height(240.dp)
         ) {
-            Scene(
+            // Show AI image if provided and available, otherwise show 3D model
+            if (aiImageUri != null && aiBitmap != null) {
+                Image(
+                    bitmap = aiBitmap!!.asImageBitmap(),
+                    contentDescription = "AI generated muscle mass visualization",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                )
+            } else {
+                Scene(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(240.dp),
+                    engine = engine,
+                    modelLoader = modelLoader,
+                    environmentLoader = environmentLoader,
+                    cameraNode = cameraNode,
+                    childNodes = listOfNotNull(bodyNode),
+                    onFrame = {
+                        val cache = morphCache ?: return@Scene
+                        val fatWeight = mapBodyFatToMorphWeight(bodyFatPercent)
+                        val muscleTargets = computeMuscleMorphTargets(scores)
+
+                        // Only skip if *only* fat changed a tiny amount and no muscles are active
+                        if (abs(fatWeight - lastFat01) < 0.002f && muscleTargets.isEmpty()) return@Scene
+                        lastFat01 = fatWeight
+
+                        applyBodyMorphs(cache, fatWeight, muscleTargets)
+                    }
+                )
+            }
+            
+            // Overlay content (e.g., toggle and Goal button) in bottom right
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(240.dp),
-                engine = engine,
-                modelLoader = modelLoader,
-                environmentLoader = environmentLoader,
-                cameraNode = cameraNode,
-                childNodes = listOfNotNull(bodyNode),
-                onFrame = {
-                    val cache = morphCache ?: return@Scene
-                    val fatWeight = mapBodyFatToMorphWeight(bodyFatPercent)
-                    val muscleTargets = computeMuscleMorphTargets(scores)
-
-                    // Only skip if *only* fat changed a tiny amount and no muscles are active
-                    if (abs(fatWeight - lastFat01) < 0.002f && muscleTargets.isEmpty()) return@Scene
-                    lastFat01 = fatWeight
-
-                    applyBodyMorphs(cache, fatWeight, muscleTargets)
-                }
-            )
+                    .height(240.dp)
+                    .padding(8.dp),
+                contentAlignment = Alignment.BottomEnd
+            ) {
+                overlayContent()
+            }
         }
     }
 }

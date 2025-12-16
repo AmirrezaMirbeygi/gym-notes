@@ -1,5 +1,6 @@
 package com.goofyapps.gymnotes
 
+import android.util.Log
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -36,23 +37,26 @@ fun BodyScoreFigure3D(
     val environmentLoader = rememberEnvironmentLoader(engine)
 
     val cameraNode = rememberCameraNode(engine).apply {
-        position = Position(x = 0.0f, y = 1.05f, z = 2.35f)
-        lookAt(Position(x = 0.0f, y = 1.0f, z = 0.0f))
+        position = Position(x = 0.0f, y = 0.0f, z = 0f)
+        lookAt(Position(x = 0.0f, y = 0.0f, z = 0.0f))
     }
 
     var bodyNode by remember { mutableStateOf<ModelNode?>(null) }
     var morphCache by remember { mutableStateOf<MorphCache?>(null) }
-    val smoothedWeights = remember { mutableMapOf<String, Float>() }
 
     LaunchedEffect(Unit) {
-        val instance = modelLoader.createModelInstance("models/body_morph.glb")
+        val instance = modelLoader.createModelInstance("models/body_morph17.glb")
         val node = ModelNode(modelInstance = instance).apply {
-            position = Position(x = 0.0f, y = -0.35f, z = 0.0f)
+            position = Position(x = 0.0f, y = -0.0f, z = -0.0f)
             rotation = Rotation(x = 0.0f, y = 0.0f, z = 0.0f)
-            scale = Scale(0.0042f)
+            scale = Scale(1f)
         }
         bodyNode = node
-        morphCache = buildMorphCache(node)
+        morphCache = buildMorphCache(node).also { logMorphInfoOnce(it) }
+        // Log the morph target names to confirm what's in the GLB
+        node.renderableNodes.forEachIndexed { index, renderable ->
+            Log.d("MORPH", "Renderable[$index] morph targets: ${renderable.morphTargetNames.joinToString()}")
+        }
     }
 
     Card(
@@ -73,102 +77,73 @@ fun BodyScoreFigure3D(
                 environmentLoader = environmentLoader,
                 cameraNode = cameraNode,
                 childNodes = listOfNotNull(bodyNode),
-
-                // Keep this empty to avoid K2 crash from invalid casts.
                 onViewCreated = { /* no-op */ },
-
                 onFrame = {
                     val cache = morphCache ?: return@Scene
-                    applyMorphs(
-                        cache = cache,
-                        scores = scores,
-                        bodyFatPercent = bodyFatPercent,
-                        smoothedWeights = smoothedWeights
-                    )
+                    applyFatOnly(cache, bodyFatPercent)
                 }
             )
         }
     }
 }
 
-/** Blender morph names (must match exactly) */
 private object MorphNames {
     const val FAT_GLOBAL = "fat_global"
-    const val MUSCLE_GLOBAL = "muscle_global"
-    const val MUSCLE_CHEST = "muscle_chest"
-    const val MUSCLE_BACK = "muscle_back"
-    const val MUSCLE_SHOULDERS = "muscle_shoulders"
-    const val MUSCLE_ARMS = "muscle_arms"
-    const val MUSCLE_LEGS = "muscle_legs"
-    const val MUSCLE_CORE = "muscle_core"
 }
-
-private val MORPH_NAME_BY_GROUP: Map<String, String> = mapOf(
-    "chest" to MorphNames.MUSCLE_CHEST,
-    "back" to MorphNames.MUSCLE_BACK,
-    "shoulders" to MorphNames.MUSCLE_SHOULDERS,
-    "arms" to MorphNames.MUSCLE_ARMS,
-    "legs" to MorphNames.MUSCLE_LEGS,
-    "core" to MorphNames.MUSCLE_CORE
-)
 
 private data class MorphCache(val renderables: List<RenderableMorphInfo>)
 
 private data class RenderableMorphInfo(
     val renderable: ModelNode.RenderableNode,
     val nameToIndex: Map<String, Int>,
-    val targetCount: Int
+    val targetCount: Int,
+    val names: List<String>
 )
 
 private fun buildMorphCache(modelNode: ModelNode): MorphCache {
     val infos = modelNode.renderableNodes.map { renderable ->
         val names = renderable.morphTargetNames
         val map = names.mapIndexed { idx, n -> n to idx }.toMap()
-        RenderableMorphInfo(renderable, map, names.size)
+        RenderableMorphInfo(renderable, map, names.size, names)
     }
     return MorphCache(infos)
 }
 
-private fun applyMorphs(
+private var logged = false
+private fun logMorphInfoOnce(cache: MorphCache) {
+    if (logged) return
+    logged = true
+    Log.d("MORPH", "===== MORPH DEBUG =====")
+    Log.d("MORPH", "renderables=${cache.renderables.size}")
+    cache.renderables.forEachIndexed { i, info ->
+        Log.d("MORPH", "Renderable[$i] targetCount=${info.targetCount}")
+        Log.d("MORPH", "names=${info.names.joinToString()}")
+    }
+    Log.d("MORPH", "=======================")
+}
+
+private fun applyFatOnly(
     cache: MorphCache,
-    scores: Map<String, Int>,
-    bodyFatPercent: Float, // 0..50
-    smoothedWeights: MutableMap<String, Float>
+    bodyFatPercent: Float
 ) {
-    val desired = mutableMapOf<String, Float>()
+    val fat01 = clamp01(bodyFatPercent / 50f)
 
-    // per-muscle groups
-    for ((groupId, morphName) in MORPH_NAME_BY_GROUP) {
-        desired[morphName] = clamp01((scores[groupId] ?: 0) / 100f)
-    }
-
-    // muscle_global = avg training score
-    val muscleAvg =
-        if (scores.isEmpty()) 0f
-        else scores.values.sum().toFloat() / (scores.size * 100f)
-    desired[MorphNames.MUSCLE_GLOBAL] = clamp01(muscleAvg)
-
-    // fat_global = body fat % mapping: 0%->0.0, 50%->1.0
-    desired[MorphNames.FAT_GLOBAL] = clamp01(bodyFatPercent / 50f)
-
-    // smooth
-    val blend = 0.18f
-    for ((morphName, target) in desired) {
-        val current = smoothedWeights[morphName] ?: 0f
-        smoothedWeights[morphName] = lerp(current, target, blend)
-    }
-
-    // apply
     for (info in cache.renderables) {
         if (info.targetCount <= 0) continue
-        val weights = FloatArray(info.targetCount)
-        for ((morphName, w) in smoothedWeights) {
-            val idx = info.nameToIndex[morphName] ?: continue
-            weights[idx] = clamp01(w)
+
+        val weights = FloatArray(info.targetCount) { 0f }
+
+        val fatIdx = info.nameToIndex[MorphNames.FAT_GLOBAL]
+        if (fatIdx != null) {
+            weights[fatIdx] = fat01
+        } else {
+            // If this triggers, you’re not applying to the mesh that has fat_global.
+            Log.d("MORPH", "fat_global NOT FOUND in this renderable")
         }
+
+        // Apply every frame (no smoothing, no mixing)
         info.renderable.setMorphWeights(weights, offset = 0)
     }
 }
 
 private fun clamp01(v: Float): Float = max(0f, min(1f, v))
-private fun lerp(a: Float, b: Float, t: Float): Float = a + (b - a) * clamp01(t)

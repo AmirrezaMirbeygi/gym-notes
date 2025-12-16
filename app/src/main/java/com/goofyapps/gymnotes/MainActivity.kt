@@ -88,6 +88,8 @@ import org.json.JSONObject
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import androidx.compose.material3.Slider
+
 
 // -------------------- MODELS --------------------
 
@@ -1398,7 +1400,20 @@ private fun ProgressScreen(
     ) {
         Text("Muscle Group Scores", style = MaterialTheme.typography.titleMedium)
 
-        BodyScoreFigure3D(scores = groupScores)
+        var bf by remember { mutableStateOf(profile.bodyFatPct ?: 20f) }
+
+        Text("Body fat: ${bf.toInt()}%")
+        Slider(
+            value = bf.coerceIn(0f, 100f),
+            onValueChange = { bf = it.coerceIn(0f, 100f) },
+            valueRange = 0f..100f
+        )
+        BodyScoreFigure3D(
+            scores = groupScores,
+            bodyFatPercent = bf
+        )
+
+
 
         ScoreBars(scores = groupScores, onClickGroup = onOpenGroup)
 

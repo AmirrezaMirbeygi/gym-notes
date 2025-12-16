@@ -1398,11 +1398,7 @@ private fun ProgressScreen(
     ) {
         Text("Muscle Group Scores", style = MaterialTheme.typography.titleMedium)
 
-        BodyScoreFigureHybrid(
-            scores = groupScores,
-            showBack = showBack,
-            onToggleSide = { showBack = !showBack }
-        )
+        BodyScoreFigure3D(scores = groupScores)
 
         ScoreBars(scores = groupScores, onClickGroup = onOpenGroup)
 

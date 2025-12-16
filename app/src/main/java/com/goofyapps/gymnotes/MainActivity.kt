@@ -1281,13 +1281,62 @@ private fun ProgressScreen(
         )
     }
 }
+// -------------------- SCORE CALIBRATION (10th→90th linear) --------------------
+
+private data class PercentileCal(val p10Kg: Float, val p90Kg: Float)
+
+/**
+ * Uses your table:
+ * score = 0 if x<=p10
+ * score = 100 if x>=p90
+ * else score = 10 + 80*(x-p10)/(p90-p10)
+ *
+ * NOTE: values are in KG and are MALE benchmarks.
+ */
+private val MUSCLE_GROUP_CAL = mapOf(
+    // groupId must match your MuscleGroup ids
+    "chest" to PercentileCal(61f, 166f),        // 135–365 lb
+    "quads" to PercentileCal(61f, 204f),        // 135–450 lb
+    "back" to PercentileCal(52f, 127f),         // Bent-over row 115–280 lb (mapped to "back")
+    "lats" to PercentileCal(45f, 132f),         // 100–290 lb (only used if you actually have "lats" group)
+    "shoulders" to PercentileCal(30f, 91f),     // 65–200 lb
+    "triceps" to PercentileCal(61f, 136f),      // 135–300 lb
+    "biceps" to PercentileCal(25f, 79f),        // 55–175 lb
+    "calves" to PercentileCal(82f, 295f),       // 180–650 lb
+    "core" to PercentileCal(27f, 180f),         // 60–220 lb
+    "forearms" to PercentileCal(34f, 82f),      // 75–180 lb
+
+    // Your UI uses "legs" (not "quads"). We'll map legs to quads calibration for now.
+    "legs" to PercentileCal(61f, 204f),
+
+    // Your UI uses "arms" (not biceps/triceps). We'll map arms to a blended-ish calibration.
+    // For now, pick mid of biceps+triceps 10th and 90th.
+    "arms" to PercentileCal((25f + 61f) / 2f, (79f + 136f) / 2f)
+)
+
+private fun estimate1RM_Epley(weightKg: Float, reps: Int): Float {
+    val r = reps.coerceIn(1, 30)
+    return weightKg * (1f + r / 30f)
+}
+
+private fun scoreFrom10to90(oneRmKg: Float, cal: PercentileCal): Int {
+    val x = oneRmKg
+    val p10 = cal.p10Kg
+    val p90 = cal.p90Kg
+
+    return when {
+        x <= p10 -> 0
+        x >= p90 -> 100
+        else -> {
+            val t = (x - p10) / (p90 - p10)  // 0..1 between 10th and 90th
+            (10f + 80f * t).toInt().coerceIn(0, 100)
+        }
+    }
+}
 
 private fun computeGroupScores(days: List<WorkoutDay>): Map<String, Int> {
-    val raw = mutableMapOf<String, Float>()
-
-    fun add(groupId: String, amount: Float) {
-        raw[groupId] = (raw[groupId] ?: 0f) + amount
-    }
+    // Best (max) estimated 1RM per groupId
+    val best1RmByGroup = mutableMapOf<String, Float>()
 
     for (d in days) {
         for (ex in d.exercises) {
@@ -1295,23 +1344,28 @@ private fun computeGroupScores(days: List<WorkoutDay>): Map<String, Int> {
                 Muscle.entries.firstOrNull { it.id == id }?.groupId
             } ?: d.groupId
 
-            if (!groupId.isNullOrBlank()) {
-                val w = ex.weight ?: 1f
-                val vol = (ex.sets * ex.reps).toFloat() * max(1f, w)
-                add(groupId, vol)
-            }
+            if (groupId.isNullOrBlank()) continue
+
+            val cal = MUSCLE_GROUP_CAL[groupId] ?: continue
+
+            val w = ex.weight ?: continue
+            if (w <= 0f || ex.reps <= 0) continue
+
+            val oneRm = estimate1RM_Epley(w, ex.reps)
+            val prevBest = best1RmByGroup[groupId] ?: 0f
+            if (oneRm > prevBest) best1RmByGroup[groupId] = oneRm
         }
     }
 
-    if (raw.isEmpty()) return MuscleGroup.entries.associate { it.id to 0 }
-
-    val maxVal = raw.values.maxOrNull() ?: 1f
+    // Produce a score for every MuscleGroup entry (default 0 if no data / no calibration)
     return MuscleGroup.entries.associate { g ->
-        val v = raw[g.id] ?: 0f
-        val score = ((v / maxVal) * 100f).toInt().coerceIn(0, 100)
+        val cal = MUSCLE_GROUP_CAL[g.id]
+        val oneRm = best1RmByGroup[g.id] ?: 0f
+        val score = if (cal == null) 0 else scoreFrom10to90(oneRm, cal)
         g.id to score
     }
 }
+
 
 @Composable
 private fun ScoreBars(

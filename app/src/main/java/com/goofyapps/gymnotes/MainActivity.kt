@@ -1,4 +1,4 @@
-@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@file:OptIn(ExperimentalMaterial3Api::class)
 
 package com.goofyapps.gymnotes
 
@@ -16,92 +16,146 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FitnessCenter
+import androidx.compose.material.icons.filled.FlipCameraAndroid
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.ShowChart
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.goofyapps.gymnotes.ui.theme.GymNotesTheme
 import org.burnoutcrew.reorderable.ReorderableItem
-import org.burnoutcrew.reorderable.detectReorderAfterLongPress
+import org.burnoutcrew.reorderable.detectReorder
 import org.burnoutcrew.reorderable.rememberReorderableLazyListState
 import org.burnoutcrew.reorderable.reorderable
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.max
 import kotlin.math.min
-import androidx.compose.runtime.Composable
 
+// -------------------- MODELS --------------------
 
-// ---------- DATA MODELS ----------
+data class WeightEntry(
+    val t: Long,
+    val w: Float
+)
 
 data class WorkoutDay(
     val id: Long = System.currentTimeMillis(),
-    val groupId: String? = null,          // preset group id OR null
-    val groupCustomName: String? = null,  // custom name if groupId is null
+    val groupId: String? = null,            // preset group id OR null if custom
+    val groupCustomName: String? = null,    // used if groupId is null
     val exercises: MutableList<ExerciseCard> = mutableListOf()
 )
 
 data class ExerciseCard(
     val id: Long = System.currentTimeMillis(),
     val equipmentName: String,
-    val videoUri: String?,               // local URI as string
+    val videoUri: String?,
     val sets: Int,
     val reps: Int,
     val weight: Float?,
     val weightUnit: String = "kg",
-    val primaryMuscleId: String? = null,          // preset muscle id OR null
-    val primaryMuscleCustomName: String? = null,  // custom muscle name if primaryMuscleId is null
-    val previousWeights: MutableList<Float> = mutableListOf(), // newest first
+    val primaryMuscleId: String? = null,          // preset muscle id OR null if custom
+    val primaryMuscleCustomName: String? = null,  // used if primaryMuscleId is null
+    val weightHistory: MutableList<WeightEntry> = mutableListOf(), // ✅ timestamped
     val notes: String = ""
 )
 
-// ---------- NAV + TABS ----------
-
-enum class Tab { WORKOUT, PROGRESS }
+data class Profile(
+    val weightKg: Float? = null,
+    val heightCm: Float? = null,
+    val bodyFatPct: Float? = null,
+    val sex: String = "Unspecified"
+) {
+    fun bmi(): Float? {
+        val w = weightKg ?: return null
+        val hCm = heightCm ?: return null
+        val hM = hCm / 100f
+        if (hM <= 0f) return null
+        return w / (hM * hM)
+    }
+}
 
 sealed class Screen {
-    object DaysList : Screen()
+    data object Workout : Screen()
+    data object Progress : Screen()
+    data class ProgressGroupDetail(val groupId: String) : Screen()
     data class DayDetail(val dayIndex: Int) : Screen()
     data class ExerciseDetail(val dayIndex: Int, val exerciseIndex: Int) : Screen()
 }
 
-// ---------- ACTIVITY ----------
+// -------------------- ACTIVITY --------------------
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            GymNotesTheme {
-                GymNotesApp()
-            }
-        }
+        setContent { GymNotesTheme { AppRoot() } }
     }
 }
 
-// ---------- PERSISTENCE (SharedPreferences + JSON) ----------
+// -------------------- PERSISTENCE --------------------
 
 private const val PREFS_NAME = "gym_notes_prefs"
 private const val KEY_DATA = "workout_data"
+
+// Profile keys
+private const val KEY_PROFILE = "profile_json"
 
 private fun serializeDays(days: List<WorkoutDay>): String {
     val daysArray = JSONArray()
@@ -125,9 +179,15 @@ private fun serializeDays(days: List<WorkoutDay>): String {
                     put("primaryMuscleCustomName", ex.primaryMuscleCustomName)
                     put("notes", ex.notes)
 
-                    val prevArr = JSONArray()
-                    ex.previousWeights.forEach { w -> prevArr.put(w.toDouble()) }
-                    put("prevWeights", prevArr)
+                    // ✅ timestamped history
+                    val histArr = JSONArray()
+                    ex.weightHistory.forEach { e ->
+                        histArr.put(JSONObject().apply {
+                            put("t", e.t)
+                            put("w", e.w.toDouble())
+                        })
+                    }
+                    put("weightHistory", histArr)
                 }
                 exArr.put(exObj)
             }
@@ -149,48 +209,56 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
         val groupId = dayObj.optString("groupId").takeIf { it.isNotBlank() }
         val groupCustomName = dayObj.optString("groupCustomName").takeIf { it.isNotBlank() }
 
-        // Backward compatibility
-        val legacyName = if (dayObj.has("name")) dayObj.optString("name") else null
-        val resolvedGroupCustomName = groupCustomName ?: legacyName
-
-        val exercises = mutableListOf<ExerciseCard>()
         val exArr = dayObj.optJSONArray("exercises") ?: JSONArray()
+        val exercises = mutableListOf<ExerciseCard>()
 
         for (j in 0 until exArr.length()) {
             val exObj = exArr.getJSONObject(j)
 
-            val prevArr = exObj.optJSONArray("prevWeights") ?: JSONArray()
-            val prevList = mutableListOf<Float>()
-            for (k in 0 until prevArr.length()) prevList.add(prevArr.getDouble(k).toFloat())
-
             val primaryMuscleId = exObj.optString("primaryMuscleId").takeIf { it.isNotBlank() }
-            val primaryMuscleCustomName =
-                exObj.optString("primaryMuscleCustomName").takeIf { it.isNotBlank() }
+            val primaryMuscleCustomName = exObj.optString("primaryMuscleCustomName").takeIf { it.isNotBlank() }
 
-            val legacyTarget = if (exObj.has("targetMuscle")) exObj.optString("targetMuscle") else null
-            val resolvedCustomMuscle = primaryMuscleCustomName ?: legacyTarget
+            // ✅ new history format
+            val histArr = exObj.optJSONArray("weightHistory")
+            val histList = mutableListOf<WeightEntry>()
+            if (histArr != null) {
+                for (k in 0 until histArr.length()) {
+                    val o = histArr.optJSONObject(k) ?: continue
+                    val t = o.optLong("t", 0L)
+                    val w = o.optDouble("w", Double.NaN)
+                    if (t > 0L && w.isFinite()) histList.add(WeightEntry(t, w.toFloat()))
+                }
+            }
 
-            val ex = ExerciseCard(
-                id = exObj.optLong("id"),
-                equipmentName = exObj.getString("equipmentName"),
-                videoUri = if (exObj.isNull("videoUri")) null else exObj.getString("videoUri"),
-                sets = exObj.getInt("sets"),
-                reps = exObj.getInt("reps"),
-                weight = if (exObj.isNull("weight")) null else exObj.getDouble("weight").toFloat(),
-                weightUnit = exObj.optString("weightUnit", "kg"),
-                primaryMuscleId = primaryMuscleId,
-                primaryMuscleCustomName = resolvedCustomMuscle,
-                previousWeights = prevList,
-                notes = exObj.optString("notes", "")
+            val weight = if (exObj.isNull("weight")) null else exObj.getDouble("weight").toFloat()
+
+            // Backward compat: if no history, seed from current weight (one entry) so charts work.
+            if (histList.isEmpty() && weight != null) {
+                histList.add(WeightEntry(System.currentTimeMillis(), weight))
+            }
+
+            exercises.add(
+                ExerciseCard(
+                    id = exObj.optLong("id"),
+                    equipmentName = exObj.optString("equipmentName", ""),
+                    videoUri = if (exObj.isNull("videoUri")) null else exObj.getString("videoUri"),
+                    sets = exObj.optInt("sets", 0),
+                    reps = exObj.optInt("reps", 0),
+                    weight = weight,
+                    weightUnit = exObj.optString("weightUnit", "kg"),
+                    primaryMuscleId = primaryMuscleId,
+                    primaryMuscleCustomName = primaryMuscleCustomName,
+                    weightHistory = histList,
+                    notes = exObj.optString("notes", "")
+                )
             )
-            exercises.add(ex)
         }
 
         result.add(
             WorkoutDay(
                 id = id,
                 groupId = groupId,
-                groupCustomName = resolvedGroupCustomName,
+                groupCustomName = groupCustomName,
                 exercises = exercises
             )
         )
@@ -200,17 +268,49 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
 }
 
 private fun saveDays(context: Context, days: List<WorkoutDay>) {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    prefs.edit().putString(KEY_DATA, serializeDays(days)).apply()
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_DATA, serializeDays(days))
+        .apply()
 }
 
 private fun loadDays(context: Context): MutableList<WorkoutDay> {
-    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    val json = prefs.getString(KEY_DATA, null) ?: return mutableListOf()
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_DATA, null) ?: return mutableListOf()
     return parseDaysFromJson(json)
 }
 
-// ---------- VIDEO THUMB + PLAYER ----------
+private fun serializeProfile(p: Profile): String =
+    JSONObject().apply {
+        put("weightKg", p.weightKg?.toDouble() ?: JSONObject.NULL)
+        put("heightCm", p.heightCm?.toDouble() ?: JSONObject.NULL)
+        put("bodyFatPct", p.bodyFatPct?.toDouble() ?: JSONObject.NULL)
+        put("sex", p.sex)
+    }.toString()
+
+private fun parseProfile(json: String): Profile {
+    val o = JSONObject(json)
+    val w = if (o.isNull("weightKg")) null else o.optDouble("weightKg").toFloat()
+    val h = if (o.isNull("heightCm")) null else o.optDouble("heightCm").toFloat()
+    val bf = if (o.isNull("bodyFatPct")) null else o.optDouble("bodyFatPct").toFloat()
+    val sex = o.optString("sex", "Unspecified")
+    return Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex)
+}
+
+private fun loadProfile(context: Context): Profile {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_PROFILE, null) ?: return Profile()
+    return runCatching { parseProfile(json) }.getOrElse { Profile() }
+}
+
+private fun saveProfile(context: Context, p: Profile) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_PROFILE, serializeProfile(p))
+        .apply()
+}
+
+// -------------------- VIDEO --------------------
 
 private fun loadVideoThumbnail(context: Context, uri: Uri): Bitmap? {
     val retriever = MediaMetadataRetriever()
@@ -233,21 +333,19 @@ private fun openVideo(context: Context, uri: Uri) {
 }
 
 @Composable
-fun VideoThumbnail(uriString: String, modifier: Modifier = Modifier) {
+private fun VideoThumbnail(uriString: String, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var bitmap by remember(uriString) { mutableStateOf<Bitmap?>(null) }
 
     LaunchedEffect(uriString) {
-        bitmap = runCatching {
-            loadVideoThumbnail(context, Uri.parse(uriString))
-        }.getOrNull()
+        bitmap = runCatching { loadVideoThumbnail(context, Uri.parse(uriString)) }.getOrNull()
     }
 
-    bitmap?.let { bmp ->
+    val bmp = bitmap
+    if (bmp != null) {
         Image(
             bitmap = bmp.asImageBitmap(),
             contentDescription = "Exercise video thumbnail",
-            contentScale = ContentScale.Crop,
             modifier = modifier
                 .fillMaxWidth()
                 .height(160.dp)
@@ -256,242 +354,216 @@ fun VideoThumbnail(uriString: String, modifier: Modifier = Modifier) {
     }
 }
 
-// ---------- GENERIC DROPDOWN ----------
+// -------------------- ROOT --------------------
 
 @Composable
-private fun <T> SimpleDropdown(
-    label: String,
-    options: List<T>,
-    selected: T?,
-    optionLabel: (T) -> String,
-    onSelect: (T) -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-
-    OutlinedTextField(
-        value = selected?.let(optionLabel) ?: "",
-        onValueChange = {},
-        label = { Text(label) },
-        readOnly = true,
-        modifier = Modifier.fillMaxWidth(),
-        trailingIcon = {
-            IconButton(onClick = { expanded = true }) {
-                Icon(Icons.Filled.ArrowDropDown, contentDescription = null)
-            }
-        }
-    )
-
-    DropdownMenu(
-        expanded = expanded,
-        onDismissRequest = { expanded = false }
-    ) {
-        options.forEach { item ->
-            DropdownMenuItem(
-                text = { Text(optionLabel(item)) },
-                onClick = {
-                    onSelect(item)
-                    expanded = false
-                }
-            )
-        }
-    }
-}
-
-// ---------- ROOT APP ----------
-
-@Composable
-fun GymNotesApp() {
+private fun AppRoot() {
     val context = LocalContext.current
     val days = remember { mutableStateListOf<WorkoutDay>().apply { addAll(loadDays(context)) } }
+    var profile by remember { mutableStateOf(loadProfile(context)) }
 
-    var tab by remember { mutableStateOf(Tab.WORKOUT) }
-    var screen by remember { mutableStateOf<Screen>(Screen.DaysList) }
-    var showSettings by remember { mutableStateOf(false) }
+    var screen: Screen by remember { mutableStateOf(Screen.Workout) }
 
     val exportLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-            uri ?: return@rememberLauncherForActivityResult
-            runCatching {
-                val json = serializeDays(days)
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(json.toByteArray())
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(serializeDays(days).toByteArray())
+                    }
                 }
             }
         }
 
     val importLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            uri ?: return@rememberLauncherForActivityResult
-            runCatching {
-                val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                if (!json.isNullOrBlank()) {
-                    val imported = parseDaysFromJson(json)
-                    days.clear()
-                    days.addAll(imported)
-                    saveDays(context, days)
-                }
-            }
-        }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(if (tab == Tab.WORKOUT) "Workout" else "Progress") },
-                actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
+            if (uri != null) {
+                runCatching {
+                    val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    if (!json.isNullOrBlank()) {
+                        val imported = parseDaysFromJson(json)
+                        days.clear()
+                        days.addAll(imported)
+                        saveDays(context, days)
                     }
                 }
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == Tab.WORKOUT,
-                    onClick = { tab = Tab.WORKOUT },
-                    label = { Text("Workout") },
-                    icon = { Text("🏋️") }
-                )
-                NavigationBarItem(
-                    selected = tab == Tab.PROGRESS,
-                    onClick = { tab = Tab.PROGRESS },
-                    label = { Text("Progress") },
-                    icon = { Text("📈") }
-                )
             }
         }
-    ) { padding ->
 
-        Box(Modifier.padding(padding)) {
-            when (tab) {
-                Tab.WORKOUT -> {
-                    when (val s = screen) {
-                        is Screen.DaysList -> {
-                            DaysListScreen(
-                                days = days,
-                                onDayClick = { idx -> screen = Screen.DayDetail(idx) },
-                                onDaysChanged = { saveDays(context, days) },
-                                onAddDayRequested = { groupId, customName ->
-                                    val newDay = if (groupId == CUSTOM_ID) {
-                                        WorkoutDay(groupId = null, groupCustomName = customName.trim())
-                                    } else {
-                                        WorkoutDay(groupId = groupId, groupCustomName = null)
-                                    }
-                                    days.add(newDay)
-                                    saveDays(context, days)
-                                }
-                            )
-                        }
+    var gearOpen by remember { mutableStateOf(false) }
+    var showProfile by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
 
-                        is Screen.DayDetail -> {
-                            val dayIdx = s.dayIndex
-                            if (dayIdx !in days.indices) {
-                                screen = Screen.DaysList
-                            } else {
-                                DayDetailScreen(
-                                    day = days[dayIdx],
-                                    onBack = { screen = Screen.DaysList },
-                                    onExerciseClick = { exIdx -> screen = Screen.ExerciseDetail(dayIdx, exIdx) },
-                                    onDayUpdated = { updated ->
-                                        days[dayIdx] = updated
-                                        saveDays(context, days)
-                                    }
-                                )
-                            }
-                        }
-
-                        is Screen.ExerciseDetail -> {
-                            val dayIdx = s.dayIndex
-                            val exIdx = s.exerciseIndex
-                            if (dayIdx !in days.indices || exIdx !in days[dayIdx].exercises.indices) {
-                                screen = Screen.DaysList
-                            } else {
-                                val ctx = LocalContext.current
-                                ExerciseDetailScreen(
-                                    dayName = displayGroupName(days[dayIdx]),
-                                    exercise = days[dayIdx].exercises[exIdx],
-                                    onBack = { screen = Screen.DayDetail(dayIdx) },
-                                    onSave = { updated ->
-                                        val oldDay = days[dayIdx]
-                                        val newExercises = oldDay.exercises.toMutableList()
-                                        newExercises[exIdx] = updated
-                                        days[dayIdx] = oldDay.copy(exercises = newExercises)
-                                        saveDays(context, days)
-                                        screen = Screen.DayDetail(dayIdx)
-                                    },
-                                    onPlayVideo = { uriString ->
-                                        runCatching { openVideo(ctx, Uri.parse(uriString)) }
-                                    }
-                                )
-                            }
-                        }
+    fun topBar(title: String, showBack: Boolean, onBack: (() -> Unit)? = null): @Composable () -> Unit = {
+        TopAppBar(
+            title = { Text(title) },
+            navigationIcon = {
+                if (showBack && onBack != null) {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                     }
                 }
-
-                Tab.PROGRESS -> {
-                    ProgressScreen(days = days)
+            },
+            actions = {
+                IconButton(onClick = { gearOpen = true }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
                 }
-            }
-        }
-    }
-
-    if (showSettings) {
-        SettingsDialog(
-            onDismiss = { showSettings = false },
-            onExport = { exportLauncher.launch("gym_notes_backup.json") },
-            onImport = { importLauncher.launch(arrayOf("application/json", "text/*")) },
-            onClearAll = {
-                days.clear()
-                saveDays(context, days)
+                DropdownMenu(expanded = gearOpen, onDismissRequest = { gearOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Profile") },
+                        onClick = {
+                            gearOpen = false
+                            showProfile = true
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Export data") },
+                        onClick = {
+                            gearOpen = false
+                            exportLauncher.launch("gym_notes_backup.json")
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Import data") },
+                        onClick = {
+                            gearOpen = false
+                            importLauncher.launch(arrayOf("application/json", "text/*"))
+                        }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Clear all data") },
+                        onClick = {
+                            gearOpen = false
+                            showClearConfirm = true
+                        }
+                    )
+                }
             }
         )
     }
-}
 
-// ---------- SETTINGS ----------
+    val bottomBar: @Composable () -> Unit = {
+        NavigationBar {
+            NavigationBarItem(
+                selected = screen is Screen.Workout || screen is Screen.DayDetail || screen is Screen.ExerciseDetail,
+                onClick = { screen = Screen.Workout },
+                icon = { Icon(Icons.Filled.FitnessCenter, contentDescription = "Workout") },
+                label = { Text("Workout") }
+            )
+            NavigationBarItem(
+                selected = screen is Screen.Progress || screen is Screen.ProgressGroupDetail,
+                onClick = { screen = Screen.Progress },
+                icon = { Icon(Icons.Filled.ShowChart, contentDescription = "Progress") },
+                label = { Text("Progress") }
+            )
+        }
+    }
 
-@Composable
-fun SettingsDialog(
-    onDismiss: () -> Unit,
-    onExport: () -> Unit,
-    onImport: () -> Unit,
-    onClearAll: () -> Unit
-) {
-    var showClearConfirm by remember { mutableStateOf(false) }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Settings") },
-        text = {
-            Column(
-                modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Button(modifier = Modifier.fillMaxWidth(), onClick = onExport) { Text("Export data") }
-                Button(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = {
-                        onImport()
-                        onDismiss()
-                    }
-                ) { Text("Import data") }
-
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { showClearConfirm = true }
-                ) { Text("Clear all data") }
-
-                // TODO: Move Profile into gear menu (stub)
-                OutlinedButton(
-                    modifier = Modifier.fillMaxWidth(),
-                    onClick = { /* TODO: Profile screen */ }
-                ) { Text("Profile") }
+    Scaffold(
+        topBar = {
+            when (val s = screen) {
+                is Screen.Workout -> topBar("Workout", showBack = false).invoke()
+                is Screen.Progress -> topBar("Progress", showBack = false).invoke()
+                is Screen.ProgressGroupDetail -> {
+                    val name = MuscleGroup.entries.firstOrNull { it.id == s.groupId }?.displayName ?: "Group"
+                    topBar(name, showBack = true) { screen = Screen.Progress }.invoke()
+                }
+                is Screen.DayDetail -> topBar(displayGroupName(days.getOrNull(s.dayIndex)), showBack = true) {
+                    screen = Screen.Workout
+                }.invoke()
+                is Screen.ExerciseDetail -> topBar("Edit Exercise", showBack = true) {
+                    screen = Screen.DayDetail(s.dayIndex)
+                }.invoke()
             }
         },
-        confirmButton = {
-            TextButton(onClick = onDismiss) { Text("Close") }
+        bottomBar = bottomBar
+    ) { padding ->
+        Box(Modifier.fillMaxSize().padding(padding)) {
+            when (val s = screen) {
+                is Screen.Workout -> WorkoutHome(
+                    days = days,
+                    onOpenDay = { idx -> screen = Screen.DayDetail(idx) },
+                    onSave = { saveDays(context, days) }
+                )
+
+                is Screen.Progress -> ProgressScreen(
+                    days = days,
+                    onOpenGroup = { gid -> screen = Screen.ProgressGroupDetail(gid) }
+                )
+
+                is Screen.ProgressGroupDetail -> ProgressGroupDetailScreen(
+                    groupId = s.groupId,
+                    days = days
+                )
+
+                is Screen.DayDetail -> {
+                    val idx = s.dayIndex
+                    if (idx !in days.indices) {
+                        screen = Screen.Workout
+                    } else {
+                        DayDetailScreen(
+                            day = days[idx],
+                            onAddExercise = { ex ->
+                                days[idx] = days[idx].copy(exercises = (days[idx].exercises + ex).toMutableList())
+                                saveDays(context, days)
+                            },
+                            onDeleteExercise = { exIndex ->
+                                val list = days[idx].exercises.toMutableList()
+                                if (exIndex in list.indices) list.removeAt(exIndex)
+                                days[idx] = days[idx].copy(exercises = list)
+                                saveDays(context, days)
+                            },
+                            onOpenExercise = { exIndex ->
+                                screen = Screen.ExerciseDetail(idx, exIndex)
+                            },
+                            onReorderExercises = { fromIndex, toIndex ->
+                                val list = days[idx].exercises.toMutableList()
+                                val item = list.removeAt(fromIndex)
+                                list.add(toIndex, item)
+                                days[idx] = days[idx].copy(exercises = list)
+                            },
+                            onSaveOrder = { saveDays(context, days) }
+                        )
+                    }
+                }
+
+                is Screen.ExerciseDetail -> {
+                    val d = s.dayIndex
+                    val e = s.exerciseIndex
+                    if (d !in days.indices || e !in days[d].exercises.indices) {
+                        screen = Screen.Workout
+                    } else {
+                        ExerciseDetailScreen(
+                            parentGroupId = days[d].groupId,
+                            exercise = days[d].exercises[e],
+                            onSave = { updated ->
+                                val list = days[d].exercises.toMutableList()
+                                list[e] = updated
+                                days[d] = days[d].copy(exercises = list)
+                                saveDays(context, days)
+                                screen = Screen.DayDetail(d)
+                            },
+                            onPlayVideo = { uriString ->
+                                runCatching { openVideo(context, Uri.parse(uriString)) }
+                            }
+                        )
+                    }
+                }
+            }
         }
-    )
+    }
+
+    if (showProfile) {
+        ProfileDialog(
+            initial = profile,
+            onDismiss = { showProfile = false },
+            onSave = { p ->
+                profile = p
+                saveProfile(context, p)
+                showProfile = false
+            }
+        )
+    }
 
     if (showClearConfirm) {
         AlertDialog(
@@ -500,332 +572,517 @@ fun SettingsDialog(
             text = { Text("This will delete all days and exercises. This cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = {
-                    onClearAll()
+                    days.clear()
+                    saveDays(context, days)
                     showClearConfirm = false
-                    onDismiss()
+                    screen = Screen.Workout
                 }) { Text("Delete") }
             },
-            dismissButton = {
-                TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") }
-            }
+            dismissButton = { TextButton(onClick = { showClearConfirm = false }) { Text("Cancel") } }
         )
     }
 }
 
-// ---------- DAYS LIST ----------
+// -------------------- PROFILE --------------------
 
 @Composable
-fun DaysListScreen(
-    days: MutableList<WorkoutDay>,
-    onDayClick: (Int) -> Unit,
-    onDaysChanged: () -> Unit,
-    onAddDayRequested: (groupId: String, customName: String) -> Unit
+private fun ProfileDialog(
+    initial: Profile,
+    onDismiss: () -> Unit,
+    onSave: (Profile) -> Unit
 ) {
-    var showAddDayDialog by remember { mutableStateOf(false) }
-    var showDayDeleteConfirm by remember { mutableStateOf(false) }
-    var dayToDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var weightText by remember { mutableStateOf(initial.weightKg?.toString() ?: "") }
+    var heightText by remember { mutableStateOf(initial.heightCm?.toString() ?: "") }
+    var bodyFatText by remember { mutableStateOf(initial.bodyFatPct?.toString() ?: "") }
 
-    val reorderState = rememberReorderableLazyListState(
-        onMove = { from, to ->
-            val temp = days.toMutableList()
-            val item = temp.removeAt(from.index)
-            temp.add(to.index, item)
-            days.clear()
-            days.addAll(temp)
-            onDaysChanged()
-        }
-    )
+    val sexOptions = listOf("Unspecified", "Male", "Female")
+    var sexExpanded by remember { mutableStateOf(false) }
+    var sex by remember { mutableStateOf(initial.sex.takeIf { it.isNotBlank() } ?: "Unspecified") }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(text = "Muscle Groups", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = { showAddDayDialog = true }) { Text("Add") }
-        }
+    val w = weightText.toFloatOrNull()
+    val h = heightText.toFloatOrNull()
+    val bf = bodyFatText.toFloatOrNull()
+    val bmi = Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex).bmi()
 
-        if (days.isEmpty()) {
-            Text(
-                text = "No days yet. Add one to start.",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        } else {
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp)
-                    .reorderable(reorderState)
-                    .detectReorderAfterLongPress(reorderState),
-                state = reorderState.listState
-            ) {
-                itemsIndexed(items = days, key = { _, day -> day.id }) { index, day ->
-                    ReorderableItem(state = reorderState, key = day.id) {
-                        DayRow(
-                            day = day,
-                            onClick = { onDayClick(index) },
-                            onDelete = {
-                                dayToDeleteIndex = index
-                                showDayDeleteConfirm = true
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Profile") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                OutlinedTextField(
+                    value = weightText,
+                    onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) weightText = v },
+                    label = { Text("Weight (kg)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = heightText,
+                    onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) heightText = v },
+                    label = { Text("Height (cm)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = bodyFatText,
+                    onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) bodyFatText = v },
+                    label = { Text("Body fat % (optional)") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                OutlinedButton(onClick = { sexExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Sex: $sex")
+                }
+                DropdownMenu(expanded = sexExpanded, onDismissRequest = { sexExpanded = false }) {
+                    sexOptions.forEach { opt ->
+                        DropdownMenuItem(
+                            text = { Text(opt) },
+                            onClick = {
+                                sex = opt
+                                sexExpanded = false
                             }
                         )
                     }
                 }
-            }
-        }
-    }
 
-    if (showAddDayDialog) {
-        AddDayDialog(
-            onDismiss = { showAddDayDialog = false },
-            onAddDay = { groupId, customName ->
-                onAddDayRequested(groupId, customName)
-                showAddDayDialog = false
-            }
-        )
-    }
-
-    if (showDayDeleteConfirm && dayToDeleteIndex != null) {
-        AlertDialog(
-            onDismissRequest = {
-                showDayDeleteConfirm = false
-                dayToDeleteIndex = null
-            },
-            title = { Text("Delete day?") },
-            text = { Text("Delete this day and all its exercises?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    val idx = dayToDeleteIndex!!
-                    if (idx in days.indices) {
-                        days.removeAt(idx)
-                        onDaysChanged()
-                    }
-                    showDayDeleteConfirm = false
-                    dayToDeleteIndex = null
-                }) { Text("Delete") }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showDayDeleteConfirm = false
-                    dayToDeleteIndex = null
-                }) { Text("Cancel") }
-            }
-        )
-    }
-}
-
-@Composable
-fun DayRow(day: WorkoutDay, onClick: () -> Unit, onDelete: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .clickable { onClick() }
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = displayGroupName(day),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "Exercises: ${day.exercises.size}",
-                    style = MaterialTheme.typography.bodySmall
+                    text = "BMI: " + (bmi?.let { String.format("%.1f", it) } ?: "—"),
+                    style = MaterialTheme.typography.bodyMedium
                 )
             }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete day")
-            }
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onSave(Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex))
+            }) { Text("Save") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
-// ---------- DAY DETAIL ----------
+// -------------------- WORKOUT HOME (Groups reorder, NO DOTS) --------------------
 
 @Composable
-fun DayDetailScreen(
-    day: WorkoutDay,
-    onBack: () -> Unit,
-    onExerciseClick: (Int) -> Unit,
-    onDayUpdated: (WorkoutDay) -> Unit
+private fun WorkoutHome(
+    days: MutableList<WorkoutDay>,
+    onOpenDay: (Int) -> Unit,
+    onSave: () -> Unit
 ) {
-    var showAddExerciseDialog by remember { mutableStateOf(false) }
-    var showExerciseDeleteConfirm by remember { mutableStateOf(false) }
-    var exerciseToDeleteIndex by remember { mutableStateOf<Int?>(null) }
+    var showAddDay by remember { mutableStateOf(false) }
+    var reorderDirty by remember { mutableStateOf(false) }
 
     val reorderState = rememberReorderableLazyListState(
         onMove = { from, to ->
-            val temp = day.exercises.toMutableList()
-            val item = temp.removeAt(from.index)
-            temp.add(to.index, item)
-            onDayUpdated(day.copy(exercises = temp))
+            days.add(to.index, days.removeAt(from.index))
+            reorderDirty = true
+        },
+        onDragEnd = { _, _ ->
+            if (reorderDirty) {
+                onSave()
+                reorderDirty = false
+            }
         }
     )
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(displayGroupName(day)) },
-                navigationIcon = { IconButton(onClick = onBack) { Text("<") } }
-            )
-        },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddExerciseDialog = true }) { Text("+") }
+            FloatingActionButton(onClick = { showAddDay = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "Add")
+            }
         }
-    ) { padding ->
+    ) { inner ->
         Column(
-            modifier = Modifier
+            Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .padding(12.dp)
+                .padding(inner)
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            if (day.exercises.isEmpty()) {
-                Text("No exercises yet. Tap + to add.", style = MaterialTheme.typography.bodyMedium)
+            Text("Muscle Groups", style = MaterialTheme.typography.titleMedium)
+
+            if (days.isEmpty()) {
+                Text("No groups yet. Tap + to add one.", style = MaterialTheme.typography.bodyMedium)
             } else {
                 LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .reorderable(reorderState)
-                        .detectReorderAfterLongPress(reorderState),
                     state = reorderState.listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .reorderable(reorderState),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    itemsIndexed(items = day.exercises, key = { _, ex -> ex.id }) { index, ex ->
-                        ReorderableItem(state = reorderState, key = ex.id) {
-                            ExerciseCardView(
-                                ex = ex,
-                                onClick = { onExerciseClick(index) },
-                                onDelete = {
-                                    exerciseToDeleteIndex = index
-                                    showExerciseDeleteConfirm = true
+                    itemsIndexed(days, key = { _, d -> d.id }) { idx, day ->
+                        ReorderableItem(reorderState, key = day.id) { _ ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .detectReorder(reorderState) // drag anywhere
+                                    .clickable { onOpenDay(idx) },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(12.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(Modifier.weight(1f)) {
+                                        Text(displayGroupName(day), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text("Exercises: ${day.exercises.size}", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    IconButton(onClick = {
+                                        days.removeAt(idx)
+                                        onSave()
+                                    }) {
+                                        Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showAddDay) {
+        AddDayDialog(
+            onDismiss = { showAddDay = false },
+            onAdd = { groupId, custom ->
+                days.add(WorkoutDay(groupId = groupId, groupCustomName = custom))
+                onSave()
+                showAddDay = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun AddDayDialog(
+    onDismiss: () -> Unit,
+    onAdd: (groupId: String?, customName: String?) -> Unit
+) {
+    var useCustom by remember { mutableStateOf(false) }
+    var customName by remember { mutableStateOf("") }
+    var groupExpanded by remember { mutableStateOf(false) }
+    var selectedGroup: MuscleGroup? by remember { mutableStateOf(MuscleGroup.CHEST) }
+
+    val isValid = if (useCustom) customName.isNotBlank() else selectedGroup != null
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Muscle Group") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = { useCustom = false }, enabled = useCustom) { Text("Preset") }
+                    FilledTonalButton(onClick = { useCustom = true }, enabled = !useCustom) { Text("Custom") }
+                }
+
+                if (!useCustom) {
+                    OutlinedButton(onClick = { groupExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(selectedGroup?.displayName ?: "Pick group")
+                    }
+                    DropdownMenu(expanded = groupExpanded, onDismissRequest = { groupExpanded = false }) {
+                        MuscleGroup.entries.forEach { g ->
+                            DropdownMenuItem(
+                                text = { Text(g.displayName) },
+                                onClick = {
+                                    selectedGroup = g
+                                    groupExpanded = false
                                 }
                             )
                         }
                     }
+                } else {
+                    OutlinedTextField(
+                        value = customName,
+                        onValueChange = { customName = it },
+                        label = { Text("Custom group name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = isValid,
+                onClick = {
+                    if (useCustom) onAdd(null, customName.trim())
+                    else onAdd(selectedGroup?.id, null)
+                }
+            ) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+// -------------------- DAY DETAIL (Exercises reorder, NO DOTS) --------------------
+
+@Composable
+private fun DayDetailScreen(
+    day: WorkoutDay,
+    onAddExercise: (ExerciseCard) -> Unit,
+    onDeleteExercise: (Int) -> Unit,
+    onOpenExercise: (Int) -> Unit,
+    onReorderExercises: (fromIndex: Int, toIndex: Int) -> Unit,
+    onSaveOrder: () -> Unit
+) {
+    var showAdd by remember { mutableStateOf(false) }
+    var reorderDirty by remember { mutableStateOf(false) }
+
+    val reorderState = rememberReorderableLazyListState(
+        onMove = { from, to ->
+            onReorderExercises(from.index, to.index)
+            reorderDirty = true
+        },
+        onDragEnd = { _, _ ->
+            if (reorderDirty) {
+                onSaveOrder()
+                reorderDirty = false
+            }
+        }
+    )
+
+    Scaffold(
+        floatingActionButton = {
+            FloatingActionButton(onClick = { showAdd = true }) {
+                Icon(Icons.Filled.Add, contentDescription = "Add")
+            }
+        }
+    ) { inner ->
+        Column(
+            Modifier.fillMaxSize().padding(inner).padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            if (day.exercises.isEmpty()) {
+                Text("No exercises yet. Tap + to add a card.", style = MaterialTheme.typography.bodyMedium)
+            } else {
+                LazyColumn(
+                    state = reorderState.listState,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .reorderable(reorderState),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(day.exercises, key = { _, ex -> ex.id }) { idx, ex ->
+                        ReorderableItem(reorderState, key = ex.id) { _ ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .detectReorder(reorderState)
+                                    .clickable { onOpenExercise(idx) },
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Column(Modifier.padding(12.dp)) {
+                                    Text(ex.equipmentName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("Muscle: ${displayPrimaryMuscle(ex)}", style = MaterialTheme.typography.bodySmall)
+                                    Text("Sets x Reps: ${ex.sets} x ${ex.reps}", style = MaterialTheme.typography.bodySmall)
+                                    ex.weight?.let { Text("Weight: $it ${ex.weightUnit}", style = MaterialTheme.typography.bodySmall) }
+
+                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                        IconButton(onClick = { onDeleteExercise(idx) }) {
+                                            Icon(Icons.Filled.Delete, contentDescription = "Delete")
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+    }
 
-        if (showAddExerciseDialog) {
-            AddExerciseDialog(
-                onDismiss = { showAddExerciseDialog = false },
-                onAddExercise = { exercise ->
-                    val newList = day.exercises.toMutableList()
-                    newList.add(exercise)
-                    onDayUpdated(day.copy(exercises = newList))
-                    showAddExerciseDialog = false
-                }
-            )
-        }
-
-        if (showExerciseDeleteConfirm && exerciseToDeleteIndex != null) {
-            AlertDialog(
-                onDismissRequest = {
-                    showExerciseDeleteConfirm = false
-                    exerciseToDeleteIndex = null
-                },
-                title = { Text("Delete exercise?") },
-                text = { Text("Delete this exercise card?") },
-                confirmButton = {
-                    TextButton(onClick = {
-                        val idx = exerciseToDeleteIndex!!
-                        if (idx in day.exercises.indices) {
-                            val newList = day.exercises.toMutableList()
-                            newList.removeAt(idx)
-                            onDayUpdated(day.copy(exercises = newList))
-                        }
-                        showExerciseDeleteConfirm = false
-                        exerciseToDeleteIndex = null
-                    }) { Text("Delete") }
-                },
-                dismissButton = {
-                    TextButton(onClick = {
-                        showExerciseDeleteConfirm = false
-                        exerciseToDeleteIndex = null
-                    }) { Text("Cancel") }
-                }
-            )
-        }
+    if (showAdd) {
+        AddExerciseDialog(
+            parentGroupId = day.groupId,
+            onDismiss = { showAdd = false },
+            onAdd = {
+                onAddExercise(it)
+                showAdd = false
+            }
+        )
     }
 }
 
-// ---------- EXERCISE CARD ----------
+// -------------------- ADD EXERCISE (seed first history entry) --------------------
 
 @Composable
-fun ExerciseCardView(ex: ExerciseCard, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun AddExerciseDialog(
+    parentGroupId: String?,
+    onDismiss: () -> Unit,
+    onAdd: (ExerciseCard) -> Unit
+) {
     val context = LocalContext.current
 
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .wrapContentHeight()
-            .clickable { onClick() }
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            ex.videoUri?.let { uriStr ->
-                VideoThumbnail(
-                    uriString = uriStr,
-                    modifier = Modifier.clickable {
-                        runCatching { openVideo(context, Uri.parse(uriStr)) }
-                    }
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-            }
+    var equipmentName by remember { mutableStateOf("") }
+    var setsText by remember { mutableStateOf("3") }
+    var repsText by remember { mutableStateOf("10") }
+    var weightText by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = ex.equipmentName,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(text = "Primary Muscle: ${displayPrimaryMuscle(ex)}")
-                    Text(text = "Sets x Reps: ${ex.sets} x ${ex.reps}")
-                    ex.weight?.let { Text(text = "Weight: $it ${ex.weightUnit}") }
-                    if (ex.notes.isNotBlank()) {
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = ex.notes,
-                            style = MaterialTheme.typography.bodySmall,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
+    var muscleExpanded by remember { mutableStateOf(false) }
+    var selectedMuscle: Muscle? by remember { mutableStateOf(null) }
+    var useCustomMuscle by remember { mutableStateOf(false) }
+    var customMuscleName by remember { mutableStateOf("") }
 
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Delete exercise")
+    var videoUri by remember { mutableStateOf<Uri?>(null) }
+    val videoPickerLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
+                videoUri = uri
             }
         }
+
+    val muscles = remember(parentGroupId) {
+        if (parentGroupId.isNullOrBlank()) Muscle.entries
+        else musclesForGroup(parentGroupId)
     }
+
+    val isValid = remember(equipmentName, setsText, repsText, useCustomMuscle, selectedMuscle, customMuscleName) {
+        val sets = setsText.toIntOrNull() ?: 0
+        val reps = repsText.toIntOrNull() ?: 0
+        val muscleOk = if (useCustomMuscle) customMuscleName.isNotBlank() else selectedMuscle != null
+        equipmentName.isNotBlank() && sets > 0 && reps > 0 && muscleOk
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add Exercise") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+
+                if (!parentGroupId.isNullOrBlank()) {
+                    val groupName = MuscleGroup.entries.firstOrNull { it.id == parentGroupId }?.displayName ?: "Group"
+                    Text("Group: $groupName", style = MaterialTheme.typography.bodySmall)
+                }
+
+                OutlinedTextField(
+                    value = equipmentName,
+                    onValueChange = { equipmentName = it },
+                    label = { Text("Equipment Name") },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        modifier = Modifier.weight(1f),
+                        value = setsText,
+                        onValueChange = { setsText = it.filter(Char::isDigit) },
+                        label = { Text("Sets") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                    OutlinedTextField(
+                        modifier = Modifier.weight(1f),
+                        value = repsText,
+                        onValueChange = { repsText = it.filter(Char::isDigit) },
+                        label = { Text("Reps") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
+                }
+
+                OutlinedTextField(
+                    value = weightText,
+                    onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) weightText = v },
+                    label = { Text("Weight (kg)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledTonalButton(onClick = { useCustomMuscle = false }, enabled = useCustomMuscle) { Text("Pick muscle") }
+                    FilledTonalButton(onClick = { useCustomMuscle = true }, enabled = !useCustomMuscle) { Text("Custom muscle") }
+                }
+
+                if (!useCustomMuscle) {
+                    OutlinedButton(onClick = { muscleExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(selectedMuscle?.displayName ?: "Select primary muscle")
+                    }
+                    DropdownMenu(expanded = muscleExpanded, onDismissRequest = { muscleExpanded = false }) {
+                        muscles.forEach { m ->
+                            DropdownMenuItem(
+                                text = { Text(m.displayName) },
+                                onClick = {
+                                    selectedMuscle = m
+                                    muscleExpanded = false
+                                }
+                            )
+                        }
+                    }
+                } else {
+                    OutlinedTextField(
+                        value = customMuscleName,
+                        onValueChange = { customMuscleName = it },
+                        label = { Text("Primary muscle name") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
+
+                OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("Notes") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Button(onClick = { videoPickerLauncher.launch(arrayOf("video/*")) }) {
+                    Text(if (videoUri == null) "Pick Video" else "Change Video")
+                }
+                Text(if (videoUri != null) "Video selected ✔" else "No video selected", style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = isValid,
+                onClick = {
+                    val sets = setsText.toIntOrNull() ?: 0
+                    val reps = repsText.toIntOrNull() ?: 0
+                    val weight = weightText.toFloatOrNull()
+
+                    val hist = mutableListOf<WeightEntry>()
+                    if (weight != null) {
+                        hist.add(WeightEntry(System.currentTimeMillis(), weight))
+                    }
+
+                    onAdd(
+                        ExerciseCard(
+                            equipmentName = equipmentName.trim(),
+                            videoUri = videoUri?.toString(),
+                            sets = sets,
+                            reps = reps,
+                            weight = weight,
+                            weightUnit = "kg",
+                            primaryMuscleId = if (!useCustomMuscle) selectedMuscle?.id else null,
+                            primaryMuscleCustomName = if (useCustomMuscle) customMuscleName.trim() else null,
+                            weightHistory = hist,
+                            notes = notes.trim()
+                        )
+                    )
+                }
+            ) { Text("Add") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
-// ---------- EXERCISE DETAIL ----------
+// -------------------- EXERCISE EDIT (append history ONLY if weight changed) --------------------
 
 @Composable
-fun ExerciseDetailScreen(
-    dayName: String,
+private fun ExerciseDetailScreen(
+    parentGroupId: String?,
     exercise: ExerciseCard,
-    onBack: () -> Unit,
     onSave: (ExerciseCard) -> Unit,
     onPlayVideo: (String) -> Unit
 ) {
@@ -838,473 +1095,399 @@ fun ExerciseDetailScreen(
     var notes by remember { mutableStateOf(exercise.notes) }
     var videoUri by remember { mutableStateOf(exercise.videoUri) }
 
-    // dropdown state
-    val presetMuscle = remember(exercise.primaryMuscleId) {
-        exercise.primaryMuscleId?.let { id -> Muscle.entries.firstOrNull { it.id == id } }
+    val muscles = remember(parentGroupId) {
+        if (parentGroupId.isNullOrBlank()) Muscle.entries else musclesForGroup(parentGroupId)
     }
-    var selectedGroup by remember { mutableStateOf<MuscleGroup?>(presetMuscle?.let { m -> MuscleGroup.entries.firstOrNull { it.id == m.groupId } }) }
-    var selectedMuscle by remember { mutableStateOf<Muscle?>(presetMuscle) }
-    var isCustomMuscle by remember { mutableStateOf(exercise.primaryMuscleId == null) }
+    var useCustomMuscle by remember { mutableStateOf(exercise.primaryMuscleId == null) }
+    var muscleExpanded by remember { mutableStateOf(false) }
+    var selectedMuscle by remember { mutableStateOf(Muscle.entries.firstOrNull { it.id == exercise.primaryMuscleId }) }
     var customMuscleName by remember { mutableStateOf(exercise.primaryMuscleCustomName ?: "") }
 
     val videoPickerLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-            uri ?: return@rememberLauncherForActivityResult
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                videoUri = uri.toString()
             }
-            videoUri = uri.toString()
         }
 
-    val sets = setsText.toIntOrNull() ?: 0
-    val reps = repsText.toIntOrNull() ?: 0
-    val weight = weightText.toFloatOrNull()
-
-    val isValid = remember(equipmentName, setsText, repsText, isCustomMuscle, selectedMuscle, customMuscleName) {
-        val baseOk = equipmentName.isNotBlank() && sets > 0 && reps > 0
-        val muscleOk = if (isCustomMuscle) customMuscleName.isNotBlank() else selectedMuscle != null
-        baseOk && muscleOk
+    val isValid = remember(equipmentName, setsText, repsText, useCustomMuscle, selectedMuscle, customMuscleName) {
+        val sets = setsText.toIntOrNull() ?: 0
+        val reps = repsText.toIntOrNull() ?: 0
+        val muscleOk = if (useCustomMuscle) customMuscleName.isNotBlank() else selectedMuscle != null
+        equipmentName.isNotBlank() && sets > 0 && reps > 0 && muscleOk
     }
-
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Edit: $dayName") },
-                navigationIcon = { IconButton(onClick = onBack) { Text("<") } },
-                actions = {
-                    TextButton(
-                        enabled = isValid,
-                        onClick = {
-                            val newPrev = mutableListOf<Float>().apply {
-                                if (exercise.weight != null && exercise.weight != weight) add(exercise.weight)
-                                addAll(exercise.previousWeights)
-                            }
-                            if (newPrev.size > 5) newPrev.subList(5, newPrev.size).clear()
-
-                            val updated = exercise.copy(
-                                equipmentName = equipmentName.trim(),
-                                sets = sets,
-                                reps = reps,
-                                weight = weight,
-                                previousWeights = newPrev,
-                                notes = notes.trim(),
-                                videoUri = videoUri,
-                                primaryMuscleId = if (isCustomMuscle) null else selectedMuscle?.id,
-                                primaryMuscleCustomName = if (isCustomMuscle) customMuscleName.trim() else null
-                            )
-                            onSave(updated)
-                        }
-                    ) { Text("Save") }
-                }
-            )
-        }
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            videoUri?.let { uriStr ->
-                VideoThumbnail(
-                    uriString = uriStr,
-                    modifier = Modifier.clickable { onPlayVideo(uriStr) }
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(onClick = { videoPickerLauncher.launch(arrayOf("video/*")) }) {
-                    Text(if (videoUri == null) "Add video" else "Change video")
-                }
-                if (videoUri != null) Text("Video linked", style = MaterialTheme.typography.bodySmall)
-            }
-
-            OutlinedTextField(
-                value = equipmentName,
-                onValueChange = { equipmentName = it },
-                label = { Text("Equipment Name") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Checkbox(checked = isCustomMuscle, onCheckedChange = { checked ->
-                    isCustomMuscle = checked
-                    if (!checked) customMuscleName = ""
-                })
-                Text("Custom primary muscle")
-            }
-
-            if (isCustomMuscle) {
-                OutlinedTextField(
-                    value = customMuscleName,
-                    onValueChange = { customMuscleName = it },
-                    label = { Text("Primary Muscle") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                SimpleDropdown(
-                    label = "Muscle Group",
-                    options = MuscleGroup.entries,
-                    selected = selectedGroup,
-                    optionLabel = { it.displayName },
-                    onSelect = {
-                        selectedGroup = it
-                        selectedMuscle = null
-                    }
-                )
-
-                SimpleDropdown(
-                    label = "Primary Muscle",
-                    options = selectedGroup?.let { musclesForGroup(it.id) } ?: emptyList(),
-                    selected = selectedMuscle,
-                    optionLabel = { it.displayName },
-                    onSelect = { selectedMuscle = it }
-                )
-            }
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    modifier = Modifier.weight(1f),
-                    value = setsText,
-                    onValueChange = { setsText = it.filter { c -> c.isDigit() } },
-                    label = { Text("Sets") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-                OutlinedTextField(
-                    modifier = Modifier.weight(1f),
-                    value = repsText,
-                    onValueChange = { repsText = it.filter { c -> c.isDigit() } },
-                    label = { Text("Reps") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                )
-            }
-
-            OutlinedTextField(
-                value = weightText,
-                onValueChange = { new ->
-                    if (new.all { it.isDigit() || it == '.' }) weightText = new
-                },
-                label = { Text("Weight (${exercise.weightUnit})") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                modifier = Modifier.fillMaxWidth()
-            )
-
-            OutlinedTextField(
-                value = notes,
-                onValueChange = { notes = it },
-                label = { Text("Notes") },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp),
-                maxLines = 6
-            )
-        }
-    }
-}
-
-// ---------- DIALOGS ----------
-
-@Composable
-fun AddDayDialog(onDismiss: () -> Unit, onAddDay: (groupId: String, customName: String) -> Unit) {
-    val groupOptions = remember { listOf(CUSTOM_ID) + MuscleGroup.entries.map { it.id } }
-
-    fun labelFor(id: String): String =
-        if (id == CUSTOM_ID) "Custom" else MuscleGroup.entries.firstOrNull { it.id == id }?.displayName ?: "Unknown"
-
-    var selectedGroupId by remember { mutableStateOf(MuscleGroup.entries.first().id) }
-    var customName by remember { mutableStateOf("") }
-
-    val isCustom = selectedGroupId == CUSTOM_ID
-    val isValid = if (isCustom) customName.isNotBlank() else true
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add Muscle Group") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                SimpleDropdown(
-                    label = "Muscle Group",
-                    options = groupOptions,
-                    selected = selectedGroupId,
-                    optionLabel = { labelFor(it) },
-                    onSelect = { selectedGroupId = it }
-                )
-
-                if (isCustom) {
-                    OutlinedTextField(
-                        value = customName,
-                        onValueChange = { customName = it },
-                        label = { Text("Custom name") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = isValid, onClick = { onAddDay(selectedGroupId, customName) }) { Text("Add") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
-}
-
-@Composable
-fun AddExerciseDialog(onDismiss: () -> Unit, onAddExercise: (ExerciseCard) -> Unit) {
-    val context = LocalContext.current
-
-    var equipmentName by remember { mutableStateOf("") }
-    var setsText by remember { mutableStateOf("3") }
-    var repsText by remember { mutableStateOf("10") }
-    var weightText by remember { mutableStateOf("") }
-    var notes by remember { mutableStateOf("") }
-    var videoUri by remember { mutableStateOf<Uri?>(null) }
-
-    var isCustomMuscle by remember { mutableStateOf(false) }
-    var customMuscleName by remember { mutableStateOf("") }
-    var selectedGroup by remember { mutableStateOf<MuscleGroup?>(MuscleGroup.entries.firstOrNull()) }
-    var selectedMuscle by remember { mutableStateOf<Muscle?>(null) }
-
-    val videoPickerLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-            uri ?: return@rememberLauncherForActivityResult
-            runCatching {
-                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            }
-            videoUri = uri
-        }
-
-    val sets = setsText.toIntOrNull() ?: 0
-    val reps = repsText.toIntOrNull() ?: 0
-    val weight = weightText.toFloatOrNull()
-
-    val isValid = remember(equipmentName, setsText, repsText, isCustomMuscle, selectedMuscle, customMuscleName) {
-        val baseOk = equipmentName.isNotBlank() && sets > 0 && reps > 0
-        val muscleOk = if (isCustomMuscle) customMuscleName.isNotBlank() else selectedMuscle != null
-        baseOk && muscleOk
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Add Exercise") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = equipmentName,
-                    onValueChange = { equipmentName = it },
-                    label = { Text("Equipment Name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Checkbox(checked = isCustomMuscle, onCheckedChange = { checked ->
-                        isCustomMuscle = checked
-                        if (!checked) customMuscleName = ""
-                    })
-                    Text("Custom primary muscle")
-                }
-
-                if (isCustomMuscle) {
-                    OutlinedTextField(
-                        value = customMuscleName,
-                        onValueChange = { customMuscleName = it },
-                        label = { Text("Primary Muscle") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    SimpleDropdown(
-                        label = "Muscle Group",
-                        options = MuscleGroup.entries,
-                        selected = selectedGroup,
-                        optionLabel = { it.displayName },
-                        onSelect = {
-                            selectedGroup = it
-                            selectedMuscle = null
-                        }
-                    )
-
-                    SimpleDropdown(
-                        label = "Primary Muscle",
-                        options = selectedGroup?.let { musclesForGroup(it.id) } ?: emptyList(),
-                        selected = selectedMuscle,
-                        optionLabel = { it.displayName },
-                        onSelect = { selectedMuscle = it }
-                    )
-                }
-
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedTextField(
-                        modifier = Modifier.weight(1f),
-                        value = setsText,
-                        onValueChange = { setsText = it.filter { c -> c.isDigit() } },
-                        label = { Text("Sets") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                    OutlinedTextField(
-                        modifier = Modifier.weight(1f),
-                        value = repsText,
-                        onValueChange = { repsText = it.filter { c -> c.isDigit() } },
-                        label = { Text("Reps") },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
-                    )
-                }
-
-                OutlinedTextField(
-                    value = weightText,
-                    onValueChange = { new -> if (new.all { it.isDigit() || it == '.' }) weightText = new },
-                    label = { Text("Weight (kg)") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("Notes") },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(90.dp)
-                )
-
-                Button(onClick = { videoPickerLauncher.launch(arrayOf("video/*")) }) {
-                    Text(if (videoUri == null) "Pick video" else "Change video")
-                }
-
-                Text(
-                    text = if (videoUri != null) "Video selected" else "No video selected",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = isValid,
-                onClick = {
-                    val ex = ExerciseCard(
-                        equipmentName = equipmentName.trim(),
-                        videoUri = videoUri?.toString(),
-                        sets = sets,
-                        reps = reps,
-                        weight = weight,
-                        weightUnit = "kg",
-                        notes = notes.trim(),
-                        primaryMuscleId = if (isCustomMuscle) null else selectedMuscle?.id,
-                        primaryMuscleCustomName = if (isCustomMuscle) customMuscleName.trim() else null
-                    )
-                    onAddExercise(ex)
-                }
-            ) { Text("Add") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
-    )
-}
-
-// ---------- PROGRESS TAB ----------
-// TODO: In Progress tab have an image of body with score per muscle group,
-// and body shape changes as each muscle group score increases.
-
-@Composable
-fun ProgressScreen(days: List<WorkoutDay>) {
-    val scores = remember(days) { computeGroupScores(days) }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(12.dp),
+        Modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (videoUri != null) {
+            VideoThumbnail(
+                uriString = videoUri!!,
+                modifier = Modifier.clickable { onPlayVideo(videoUri!!) }
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = { videoPickerLauncher.launch(arrayOf("video/*")) }) {
+                Text(if (videoUri == null) "Add video" else "Change video")
+            }
+            if (videoUri != null) Text("Video linked", style = MaterialTheme.typography.bodySmall)
+        }
+
+        OutlinedTextField(
+            value = equipmentName,
+            onValueChange = { equipmentName = it },
+            label = { Text("Equipment Name") },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(
+                modifier = Modifier.weight(1f),
+                value = setsText,
+                onValueChange = { setsText = it.filter(Char::isDigit) },
+                label = { Text("Sets") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            OutlinedTextField(
+                modifier = Modifier.weight(1f),
+                value = repsText,
+                onValueChange = { repsText = it.filter(Char::isDigit) },
+                label = { Text("Reps") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+        }
+
+        OutlinedTextField(
+            value = weightText,
+            onValueChange = { v -> if (v.all { it.isDigit() || it == '.' }) weightText = v },
+            label = { Text("Weight (kg)") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilledTonalButton(onClick = { useCustomMuscle = false }, enabled = useCustomMuscle) { Text("Pick muscle") }
+            FilledTonalButton(onClick = { useCustomMuscle = true }, enabled = !useCustomMuscle) { Text("Custom muscle") }
+        }
+
+        if (!useCustomMuscle) {
+            OutlinedButton(onClick = { muscleExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text(selectedMuscle?.displayName ?: "Select primary muscle")
+            }
+            DropdownMenu(expanded = muscleExpanded, onDismissRequest = { muscleExpanded = false }) {
+                muscles.forEach { m ->
+                    DropdownMenuItem(
+                        text = { Text(m.displayName) },
+                        onClick = {
+                            selectedMuscle = m
+                            muscleExpanded = false
+                        }
+                    )
+                }
+            }
+        } else {
+            OutlinedTextField(
+                value = customMuscleName,
+                onValueChange = { customMuscleName = it },
+                label = { Text("Primary muscle name") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+
+        OutlinedTextField(
+            value = notes,
+            onValueChange = { notes = it },
+            label = { Text("Notes") },
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        Spacer(Modifier.height(6.dp))
+
+        Button(
+            enabled = isValid,
+            onClick = {
+                val sets = setsText.toIntOrNull() ?: 0
+                val reps = repsText.toIntOrNull() ?: 0
+                val newWeight = weightText.toFloatOrNull()
+
+                val hist = exercise.weightHistory.toMutableList()
+
+                // ✅ only append when changed (and not null)
+                val oldWeight = exercise.weight
+                if (newWeight != null && (oldWeight == null || newWeight != oldWeight)) {
+                    // Also avoid duplicating the same weight as the last entry
+                    val last = hist.lastOrNull()
+                    if (last == null || last.w != newWeight) {
+                        hist.add(WeightEntry(System.currentTimeMillis(), newWeight))
+                    }
+                    // hard cap to avoid bloat
+                    if (hist.size > 200) hist.subList(0, hist.size - 200).clear()
+                }
+
+                onSave(
+                    exercise.copy(
+                        equipmentName = equipmentName.trim(),
+                        sets = sets,
+                        reps = reps,
+                        weight = newWeight,
+                        notes = notes.trim(),
+                        videoUri = videoUri,
+                        weightHistory = hist,
+                        primaryMuscleId = if (!useCustomMuscle) selectedMuscle?.id else null,
+                        primaryMuscleCustomName = if (useCustomMuscle) customMuscleName.trim() else null
+                    )
+                )
+            }
+        ) { Text("Save") }
+    }
+}
+
+// -------------------- PROGRESS --------------------
+
+@Composable
+private fun ProgressScreen(
+    days: List<WorkoutDay>,
+    onOpenGroup: (String) -> Unit
+) {
+    val scores = remember(days) { computeGroupScores(days) }
+    var showBack by remember { mutableStateOf(false) }
+
+    Column(
+        Modifier.fillMaxSize().padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Muscle Group Scores", style = MaterialTheme.typography.titleMedium)
 
-        BodyScoreFigure(scores = scores)
+        BodyScoreFigureHybrid(
+            scores = scores,
+            showBack = showBack,
+            onToggleSide = { showBack = !showBack }
+        )
 
-        Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                MuscleGroup.entries.forEach { g ->
-                    val s = scores[g.id] ?: 0
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(g.displayName)
-                        Text("$s")
-                    }
-                    LinearProgressIndicator(
-                        progress = (s.coerceIn(0, 100) / 100f),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            }
-        }
+        ScoreBars(
+            scores = scores,
+            onClickGroup = onOpenGroup
+        )
     }
 }
 
 private fun computeGroupScores(days: List<WorkoutDay>): Map<String, Int> {
-    // Simple scoring:
-    // volume = sets * reps * (weight or 1)
-    // normalized per group into 0..100 using max group volume
-    val groupVolume = mutableMapOf<String, Float>()
+    val raw = mutableMapOf<String, Float>()
+
+    fun add(groupId: String, amount: Float) {
+        raw[groupId] = (raw[groupId] ?: 0f) + amount
+    }
 
     for (d in days) {
         for (ex in d.exercises) {
-            val muscleId = ex.primaryMuscleId ?: continue
-            val muscle = Muscle.entries.firstOrNull { it.id == muscleId } ?: continue
-            val groupId = muscle.groupId
+            val groupId = ex.primaryMuscleId?.let { id ->
+                Muscle.entries.firstOrNull { it.id == id }?.groupId
+            } ?: d.groupId
 
-            val w = ex.weight ?: 1f
-            val vol = (ex.sets * ex.reps).toFloat() * max(1f, w)
-            groupVolume[groupId] = (groupVolume[groupId] ?: 0f) + vol
+            if (!groupId.isNullOrBlank()) {
+                val w = ex.weight ?: 1f
+                val vol = (ex.sets * ex.reps).toFloat() * max(1f, w)
+                add(groupId, vol)
+            }
         }
     }
 
-    val maxVol = groupVolume.values.maxOrNull() ?: 0f
-    if (maxVol <= 0f) return MuscleGroup.entries.associate { it.id to 0 }
+    if (raw.isEmpty()) return MuscleGroup.entries.associate { it.id to 0 }
 
+    val maxVal = raw.values.maxOrNull() ?: 1f
     return MuscleGroup.entries.associate { g ->
-        val v = groupVolume[g.id] ?: 0f
-        val score = ((v / maxVol) * 100f).toInt().coerceIn(0, 100)
+        val v = raw[g.id] ?: 0f
+        val score = ((v / maxVal) * 100f).toInt().coerceIn(0, 100)
         g.id to score
     }
 }
 
 @Composable
-fun BodyScoreFigure(scores: Map<String, Int>) {
-    // ✅ Read theme colors OUTSIDE Canvas (Canvas draw block is not composable)
-    val onSurface = MaterialTheme.colorScheme.onSurface
-    val headColor = onSurface.copy(alpha = 0.20f)
-    val bodyColor = onSurface.copy(alpha = 0.18f)
-    val limbColor = onSurface.copy(alpha = 0.20f)
+private fun ScoreBars(
+    scores: Map<String, Int>,
+    onClickGroup: (String) -> Unit
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            MuscleGroup.entries.forEach { g ->
+                val v = (scores[g.id] ?: 0).coerceIn(0, 100)
 
-    Card(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onClickGroup(g.id) },
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(g.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(v.toString())
+                }
+                LinearProgressIndicator(
+                    progress = { v / 100f },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+// -------------------- PROGRESS GROUP DETAIL (muscles + charts) --------------------
+
+@Composable
+private fun ProgressGroupDetailScreen(
+    groupId: String,
+    days: List<WorkoutDay>
+) {
+    val muscles = remember(groupId) { musclesForGroup(groupId) }
+
+    Column(
+        Modifier.fillMaxSize().padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("Muscles", style = MaterialTheme.typography.titleMedium)
+
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(muscles, key = { it.id }) { m ->
+                val entries = remember(days, m.id) { collectWeightHistoryForMuscle(days, m.id) }
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(m.displayName, style = MaterialTheme.typography.titleMedium)
+                        if (entries.isEmpty()) {
+                            Text("No history yet.", style = MaterialTheme.typography.bodySmall, modifier = Modifier.alpha(0.7f))
+                        } else {
+                            WeightHistoryChart(entries = entries, modifier = Modifier.fillMaxWidth().height(110.dp))
+                            val last = entries.last()
+                            Text("Last: ${last.w} kg", style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun collectWeightHistoryForMuscle(days: List<WorkoutDay>, muscleId: String): List<WeightEntry> {
+    val all = mutableListOf<WeightEntry>()
+    for (d in days) {
+        for (ex in d.exercises) {
+            if (ex.primaryMuscleId == muscleId) {
+                all.addAll(ex.weightHistory)
+            }
+        }
+    }
+    return all.sortedBy { it.t }
+}
+
+@Composable
+private fun WeightHistoryChart(
+    entries: List<WeightEntry>,
+    modifier: Modifier = Modifier
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+
+    Canvas(modifier) {
+        if (entries.size < 2) return@Canvas
+
+        val w = size.width
+        val h = size.height
+        val pad = 12f
+
+        val minT = entries.minOf { it.t }
+        val maxT = entries.maxOf { it.t }
+        val minW = entries.minOf { it.w }
+        val maxW = entries.maxOf { it.w }
+
+        val dt = max(1f, (maxT - minT).toFloat())
+        val dw = max(0.001f, (maxW - minW))
+
+        fun x(t: Long): Float = pad + ((t - minT).toFloat() / dt) * (w - 2f * pad)
+        fun y(v: Float): Float {
+            val n = (v - minW) / dw
+            return (h - pad) - n * (h - 2f * pad)
+        }
+
+        // axes baseline
+        drawLine(
+            color = onSurface.copy(alpha = 0.15f),
+            start = Offset(pad, h - pad),
+            end = Offset(w - pad, h - pad),
+            strokeWidth = 2f
+        )
+
+        // line
+        for (i in 0 until entries.size - 1) {
+            val a = entries[i]
+            val b = entries[i + 1]
+            drawLine(
+                color = onSurface.copy(alpha = 0.7f),
+                start = Offset(x(a.t), y(a.w)),
+                end = Offset(x(b.t), y(b.w)),
+                strokeWidth = 3f
+            )
+        }
+
+        // points
+        entries.forEach { e ->
+            drawCircle(
+                color = onSurface.copy(alpha = 0.85f),
+                radius = 4f,
+                center = Offset(x(e.t), y(e.w))
+            )
+        }
+    }
+}
+
+// -------------------- FIGURE --------------------
+
+@Composable
+private fun BodyScoreFigureHybrid(
+    scores: Map<String, Int>,
+    showBack: Boolean,
+    onToggleSide: () -> Unit
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val primary = MaterialTheme.colorScheme.primary
+
+    Card(Modifier.fillMaxWidth()) {
         Box(
-            modifier = Modifier
+            Modifier
                 .fillMaxWidth()
                 .height(240.dp)
-                .padding(12.dp),
-            contentAlignment = Alignment.Center
+                .padding(12.dp)
         ) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
+            Canvas(Modifier.fillMaxSize().align(Alignment.Center)) {
                 val w = size.width
                 val h = size.height
                 val cx = w / 2f
 
-                fun s(id: String): Float = (scores[id] ?: 0) / 100f
+                fun score01(id: String): Float = ((scores[id] ?: 0).coerceIn(0, 100) / 100f)
 
-                val chestScale = 1f + s("chest") * 0.35f
-                val shoulderScale = 1f + s("shoulders") * 0.40f
-                val armScale = 1f + s("arms") * 0.35f
-                val legScale = 1f + s("legs") * 0.40f
-                val coreScale = 1f + s("core") * 0.25f
-                val backScale = 1f + s("back") * 0.25f
+                val chest = score01("chest")
+                val back = score01("back")
+                val shoulders = score01("shoulders")
+                val arms = score01("arms")
+                val legs = score01("legs")
+                val core = score01("core")
+
+                val shoulderScale = 1f + shoulders * 0.35f
+                val chestBackScale = 1f + max(chest, back) * 0.25f
+                val waistScale = 1f - core * 0.15f
+                val armScale = 1f + arms * 0.30f
+                val legScale = 1f + legs * 0.30f
 
                 val headR = min(w, h) * 0.06f
-                val shoulderY = (headR * 2.4f) + (headR * 0.7f)
+                val shoulderY = headR * 3.2f
+                val chestY = h * 0.44f
                 val waistY = h * 0.62f
                 val hipY = h * 0.72f
                 val footY = h * 0.95f
@@ -1315,8 +1498,8 @@ fun BodyScoreFigure(scores: Map<String, Int>) {
                 val baseHipHalf = w * 0.15f
 
                 val shoulderHalf = baseShoulderHalf * shoulderScale
-                val chestHalf = baseChestHalf * max(chestScale, backScale)
-                val waistHalf = baseWaistHalf * coreScale
+                val chestHalf = baseChestHalf * chestBackScale
+                val waistHalf = baseWaistHalf * waistScale
                 val hipHalf = baseHipHalf * legScale
 
                 val armX = shoulderHalf + w * 0.06f
@@ -1324,89 +1507,154 @@ fun BodyScoreFigure(scores: Map<String, Int>) {
                 val armBottomY = waistY
                 val armThickness = w * 0.03f * armScale
 
-                val legGap = w * 0.04f
-                val legHalf = (hipHalf - legGap) / 2f
-                val legThickness = legHalf * legScale
+                val legGap = w * 0.05f
+                val legHalf = max(1f, (hipHalf - legGap) / 2f)
+                val legThickness = legHalf * 0.90f
 
-                // Head
                 drawCircle(
-                    color = headColor,
+                    color = onSurface.copy(alpha = 0.18f),
                     radius = headR,
                     center = Offset(cx, headR * 1.3f)
                 )
 
-                // Torso
-                val torso = Path().apply {
+                val torsoPath = Path().apply {
                     moveTo(cx - shoulderHalf, shoulderY)
                     lineTo(cx + shoulderHalf, shoulderY)
-                    lineTo(cx + chestHalf, h * 0.44f)
+                    lineTo(cx + chestHalf, chestY)
                     lineTo(cx + waistHalf, waistY)
                     lineTo(cx + hipHalf, hipY)
                     lineTo(cx - hipHalf, hipY)
                     lineTo(cx - waistHalf, waistY)
-                    lineTo(cx - chestHalf, h * 0.44f)
+                    lineTo(cx - chestHalf, chestY)
                     close()
                 }
 
-                drawPath(path = torso, color = bodyColor)
+                drawPath(torsoPath, onSurface.copy(alpha = 0.12f), style = Fill)
+                drawPath(torsoPath, onSurface.copy(alpha = 0.18f), style = Stroke(width = 2f))
 
-                // Arms
                 drawLine(
-                    color = limbColor,
+                    color = onSurface.copy(alpha = 0.16f),
                     start = Offset(cx - armX, armTopY),
                     end = Offset(cx - armX, armBottomY),
                     strokeWidth = armThickness
                 )
                 drawLine(
-                    color = limbColor,
+                    color = onSurface.copy(alpha = 0.16f),
                     start = Offset(cx + armX, armTopY),
                     end = Offset(cx + armX, armBottomY),
                     strokeWidth = armThickness
                 )
 
-                // Legs
                 val leftLegX = cx - legGap / 2f - legHalf
                 val rightLegX = cx + legGap / 2f + legHalf
 
                 drawLine(
-                    color = limbColor,
+                    color = onSurface.copy(alpha = 0.16f),
                     start = Offset(leftLegX, hipY),
                     end = Offset(leftLegX, footY),
                     strokeWidth = legThickness
                 )
                 drawLine(
-                    color = limbColor,
+                    color = onSurface.copy(alpha = 0.16f),
                     start = Offset(rightLegX, hipY),
                     end = Offset(rightLegX, footY),
                     strokeWidth = legThickness
                 )
+
+                fun heatAlpha(v: Float): Float = (0.06f + v * 0.22f).coerceIn(0.06f, 0.30f)
+
+                val emphasizeChest = !showBack
+
+                val shoulderPath = Path().apply {
+                    moveTo(cx - shoulderHalf, shoulderY)
+                    lineTo(cx + shoulderHalf, shoulderY)
+                    lineTo(cx + chestHalf, chestY)
+                    lineTo(cx - chestHalf, chestY)
+                    close()
+                }
+                drawPath(shoulderPath, primary.copy(alpha = heatAlpha(shoulders)), style = Fill)
+
+                val chestBackPath = Path().apply {
+                    moveTo(cx - chestHalf, chestY)
+                    lineTo(cx + chestHalf, chestY)
+                    lineTo(cx + waistHalf, waistY)
+                    lineTo(cx - waistHalf, waistY)
+                    close()
+                }
+                drawPath(
+                    chestBackPath,
+                    primary.copy(alpha = heatAlpha(if (emphasizeChest) chest else back)),
+                    style = Fill
+                )
+
+                val corePath = Path().apply {
+                    moveTo(cx - waistHalf, waistY)
+                    lineTo(cx + waistHalf, waistY)
+                    lineTo(cx + hipHalf, hipY)
+                    lineTo(cx - hipHalf, hipY)
+                    close()
+                }
+                drawPath(corePath, primary.copy(alpha = heatAlpha(core)), style = Fill)
+
+                drawLine(
+                    color = primary.copy(alpha = heatAlpha(arms)),
+                    start = Offset(cx - armX, armTopY),
+                    end = Offset(cx - armX, armBottomY),
+                    strokeWidth = armThickness * 1.05f
+                )
+                drawLine(
+                    color = primary.copy(alpha = heatAlpha(arms)),
+                    start = Offset(cx + armX, armTopY),
+                    end = Offset(cx + armX, armBottomY),
+                    strokeWidth = armThickness * 1.05f
+                )
+
+                drawLine(
+                    color = primary.copy(alpha = heatAlpha(legs)),
+                    start = Offset(leftLegX, hipY),
+                    end = Offset(leftLegX, footY),
+                    strokeWidth = legThickness * 1.05f
+                )
+                drawLine(
+                    color = primary.copy(alpha = heatAlpha(legs)),
+                    start = Offset(rightLegX, hipY),
+                    end = Offset(rightLegX, footY),
+                    strokeWidth = legThickness * 1.05f
+                )
             }
+
+            IconButton(
+                onClick = onToggleSide,
+                modifier = Modifier.align(Alignment.TopEnd)
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.FlipCameraAndroid,
+                    contentDescription = if (showBack) "Show front" else "Show back"
+                )
+            }
+
+            // If you want ZERO text, delete this.
+            Text(
+                text = if (showBack) "Back" else "Front",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(top = 2.dp)
+                    .alpha(0.65f)
+            )
         }
     }
 }
 
+// -------------------- HELPERS --------------------
 
-
-// ---------- HELPERS ----------
-
-private fun displayGroupName(day: WorkoutDay): String {
-    val preset = day.groupId?.let { id ->
-        MuscleGroup.entries.firstOrNull { it.id == id }?.displayName
-    }
+private fun displayGroupName(day: WorkoutDay?): String {
+    if (day == null) return "Workout"
+    val preset = day.groupId?.let { id -> MuscleGroup.entries.firstOrNull { it.id == id }?.displayName }
     return preset ?: day.groupCustomName ?: "Unassigned"
 }
 
 private fun displayPrimaryMuscle(ex: ExerciseCard): String {
-    val preset = ex.primaryMuscleId?.let { id ->
-        Muscle.entries.firstOrNull { it.id == id }?.displayName
-    }
+    val preset = ex.primaryMuscleId?.let { id -> Muscle.entries.firstOrNull { it.id == id }?.displayName }
     return preset ?: ex.primaryMuscleCustomName ?: "Unassigned"
-}
-
-// ---------- PREVIEW ----------
-
-@Preview(showBackground = true)
-@Composable
-fun GymNotesPreview() {
-    GymNotesTheme { GymNotesApp() }
 }

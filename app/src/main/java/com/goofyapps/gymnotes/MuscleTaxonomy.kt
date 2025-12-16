@@ -1,26 +1,17 @@
 package com.goofyapps.gymnotes
 
-const val CUSTOM_ID = "__custom__"
-
-enum class MuscleGroup(
-    val id: String,
-    val displayName: String
-) {
+enum class MuscleGroup(val id: String, val displayName: String) {
     CHEST("chest", "Chest"),
     BACK("back", "Back"),
     CORE("core", "Core"),
     SHOULDERS("shoulders", "Shoulders"),
     ARMS("arms", "Arms"),
-    LEGS("legs", "Legs");
+    LEGS("legs", "Legs"),
 }
 
-enum class Muscle(
-    val id: String,
-    val groupId: String,
-    val displayName: String
-) {
+enum class Muscle(val id: String, val groupId: String, val displayName: String) {
     // Chest
-    CHEST_GENERAL("chest_general", "chest", "Chest"),
+    CHEST_GENERAL("chest_general", "chest", "Chest (General)"),
     UPPER_CHEST("upper_chest", "chest", "Upper Chest"),
     LOWER_CHEST("lower_chest", "chest", "Lower Chest"),
 
@@ -46,7 +37,7 @@ enum class Muscle(
     QUADS("quads", "legs", "Quads"),
     HAMSTRINGS("hamstrings", "legs", "Hamstrings"),
     GLUTES("glutes", "legs", "Glutes"),
-    CALVES("calves", "legs", "Calves");
+    CALVES("calves", "legs", "Calves"),
 }
 
 fun musclesForGroup(groupId: String): List<Muscle> =

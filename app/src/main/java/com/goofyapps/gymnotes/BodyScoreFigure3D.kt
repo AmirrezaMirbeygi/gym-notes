@@ -4,11 +4,14 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.util.Log
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
@@ -21,9 +24,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import io.github.sceneview.Scene
 import io.github.sceneview.math.Position
@@ -91,6 +99,21 @@ fun BodyScoreFigure3D(
         }
     }
 
+    // Create a nested scroll connection that blocks scroll events from propagating to parent
+    val nestedScrollConnection = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // Consume all scroll events to prevent parent scrolling when touching the 3D figure
+                return available
+            }
+            
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+                // Consume remaining scroll events
+                return available
+            }
+        }
+    }
+
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = Color.Transparent)
@@ -99,6 +122,7 @@ fun BodyScoreFigure3D(
             Modifier
                 .fillMaxWidth()
                 .height(240.dp)
+                .nestedScroll(nestedScrollConnection)
         ) {
             // Show AI image if provided and available, otherwise show 3D model
             if (aiImageUri != null && aiBitmap != null) {
@@ -234,9 +258,8 @@ private fun computeMuscleMorphTargets(scores: Map<String, Int>): Map<String, Flo
     val arms = scoreWeight(MuscleGroup.ARMS.id)
     val legs = scoreWeight(MuscleGroup.LEGS.id)
 
-    // Global muscle morph as a simple average of all groups
-    val global =
-        listOf(chest, back, core, shoulders, arms, legs).average().toFloat()
+    // Global muscle morph hardcoded to 0 (disabled)
+    val global = 0f
 
     return mapOf(
         MorphNames.MUSCLE_GLOBAL to global,

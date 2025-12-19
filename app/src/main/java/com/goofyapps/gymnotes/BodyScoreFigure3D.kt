@@ -31,7 +31,6 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import io.github.sceneview.Scene
 import io.github.sceneview.math.Position
@@ -49,7 +48,7 @@ import kotlin.math.abs
 @Composable
 fun BodyScoreFigure3D(
     scores: Map<String, Int>,
-    bodyFatPercent: Float = 15f, // 5..30
+    bodyFatPercent: Float = 15f, // 5..50
     aiImageUri: Uri? = null, // AI generated image to show instead of 3D
     overlayContent: @Composable () -> Unit = {}
 ) {
@@ -73,7 +72,7 @@ fun BodyScoreFigure3D(
     val cameraNode = remember(engine) { 
         CameraNode(engine).apply {
             // Set initial camera position - adjust these values to move camera
-            position = Position(x = 0.0f, y = 1.5f, z = 4.0f)
+            position = Position(x = 0.0f, y = 0.0f, z = 0.0f)
             lookAt(Position(x = 0.0f, y = 0.0f, z = 0.0f))
         }
     }
@@ -85,17 +84,22 @@ fun BodyScoreFigure3D(
     var lastFat01 by remember { mutableFloatStateOf(-1f) }
 
     LaunchedEffect(Unit) {
-        val instance = modelLoader.createModelInstance("models/body_morph20.glb")
-        val node = ModelNode(modelInstance = instance).apply {
-            position = Position(x = 0.0f, y = -1.50f, z = -2.2f)
-            rotation = Rotation(x = 0.0f, y = 0.0f, z = 0.0f)
-            scale = Scale(1f)
-        }
-        bodyNode = node
-        morphCache = buildMorphCache(node).also { logMorphInfoOnce(it) }
+        try {
+            val instance = modelLoader.createModelInstance("models/body_morph25.glb")
+            val node = ModelNode(modelInstance = instance).apply {
+                position = Position(x = 0.0f, y = 0.0f, z = 0.0f)
+                rotation = Rotation(x = 0.0f, y = 0.0f, z = 0.0f)
+                scale = Scale(0.018f)
+            }
+            
+            bodyNode = node
+            morphCache = buildMorphCache(node).also { logMorphInfoOnce(it) }
 
-        node.renderableNodes.forEachIndexed { index, renderable ->
-            Log.d("MORPH", "Renderable[$index] morph targets: ${renderable.morphTargetNames.joinToString()}")
+            node.renderableNodes.forEachIndexed { index, renderable ->
+                Log.d("MORPH", "Renderable[$index] morph targets: ${renderable.morphTargetNames.joinToString()}")
+            }
+        } catch (e: Exception) {
+            Log.e("BodyScoreFigure3D", "Failed to load 3D model", e)
         }
     }
 
@@ -103,13 +107,8 @@ fun BodyScoreFigure3D(
     val nestedScrollConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                // Consume all scroll events to prevent parent scrolling when touching the 3D figure
-                return available
-            }
-            
-            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
-                // Consume remaining scroll events
-                return available
+                // Only consume drag events to prevent parent scrolling when touching the 3D figure
+                return if (source == NestedScrollSource.Drag) available else Offset.Zero
             }
         }
     }
@@ -224,38 +223,36 @@ private fun logMorphInfoOnce(cache: MorphCache) {
 }
 
 /**
- * Map 5–30% body fat into a morph weight.
- * We deliberately allow values >> 1 here to strongly exaggerate visual difference.
+ * Map 5–50% body fat into a morph weight.
+ * Moderate exaggeration to make changes more visible.
  */
 private fun mapBodyFatToMorphWeight(bodyFatPercent: Float): Float {
-    val clamped = bodyFatPercent.coerceIn(5f, 30f)
-    val n = clamp01((clamped - 5f) / 25f)          // 0..1 (5% -> 0, 30% -> 1)
-    val curved = n * n * n                         // strongly emphasize higher values
-    val base = -0.2f                               // allow a bit below 0 at very low fat
-    val scale = 10.0f                              // up to ~10x morph weight at max fat
-    return base + curved * scale
+    val clamped = bodyFatPercent.coerceIn(5f, 50f)
+    val n = clamp01((clamped - 5f) / 45f)          // 0..1 (5% -> 0, 50% -> 1)
+    val curved = n * n                              // moderate curve (less aggressive than n*n*n)
+    val scale = 3.0f                                // 3x scale (less than previous 10x)
+    return curved * scale
 }
 
 /**
  * Convert app-level group scores (0–100) into morph target weights.
- * We deliberately allow weights > 1 to exaggerate the effect vs. Blender.
+ * Moderate exaggeration to make changes more visible.
  * The keys here are the names of morph targets in the GLB file.
  */
 private fun computeMuscleMorphTargets(scores: Map<String, Int>): Map<String, Float> {
     if (scores.isEmpty()) return emptyMap()
 
-    fun scoreWeight(key: String): Float {
+    fun scoreWeight(key: String, scale: Float = 1.5f): Float {
         val raw = (scores[key] ?: 0).coerceIn(0, 100) / 100f // 0..1
-        val curved = raw * raw                               // push differences to high end
-        val scale = 2.5f                                     // up to ~2.5x morph weight
+        val curved = raw * raw                               // squared curve
         return curved * scale
     }
 
     val chest = scoreWeight(MuscleGroup.CHEST.id)
     val back = scoreWeight(MuscleGroup.BACK.id)
     val core = scoreWeight(MuscleGroup.CORE.id)
-    val shoulders = scoreWeight(MuscleGroup.SHOULDERS.id)
-    val arms = scoreWeight(MuscleGroup.ARMS.id)
+    val shoulders = scoreWeight(MuscleGroup.SHOULDERS.id, scale = 1.0f) // More subtle for shoulders
+    val arms = scoreWeight(MuscleGroup.ARMS.id, scale = 1.0f)             // More subtle for arms
     val legs = scoreWeight(MuscleGroup.LEGS.id)
 
     // Global muscle morph hardcoded to 0 (disabled)
@@ -272,31 +269,62 @@ private fun computeMuscleMorphTargets(scores: Map<String, Int>): Map<String, Flo
     )
 }
 
+/**
+ * Calculate muscle reduction factor based on body fat.
+ * When fat weight > 0.5, muscles start reducing.
+ * At max fat, muscles are reduced to 25% of their original value.
+ */
+private fun calculateMuscleReductionFactor(fatWeight: Float): Float {
+    if (fatWeight <= 0.5f) {
+        return 1.0f // No reduction when fat <= 0.5
+    }
+    // Linear interpolation from 1.0 at fat=0.5 to 0.25 at fat=max
+    // Assuming max fat weight is around 3.0 (with 3x scale), but we'll use the actual fat weight
+    // Factor = 1.0 - (fat - 0.5) / (maxFat - 0.5) * 0.75
+    // For simplicity, we'll assume max fat is 3.0, so:
+    // Factor = 1.0 - (fat - 0.5) / 2.5 * 0.75
+    val maxFat = 3.0f // Max fat weight with 3x scale
+    val reductionRange = maxFat - 0.5f // 2.5
+    val reductionAmount = (fatWeight - 0.5f) / reductionRange * 0.75f // 0 to 0.75
+    return 1.0f - reductionAmount // 1.0 to 0.25
+}
+
 private fun applyBodyMorphs(
     cache: MorphCache,
     fat01: Float,
     muscleTargets: Map<String, Float>
 ) {
-    for (info in cache.renderables) {
-        if (info.targetCount <= 0) continue
+    try {
+        // Calculate muscle reduction factor based on fat weight
+        val muscleReductionFactor = calculateMuscleReductionFactor(fat01)
+        
+        for (info in cache.renderables) {
+            if (info.targetCount <= 0) continue
 
-        // reset cached weights (cheap loop, no allocations)
-        val w = info.weights
-        for (i in w.indices) w[i] = 0f
+            // reset cached weights (cheap loop, no allocations)
+            val w = info.weights
+            for (i in w.indices) w[i] = 0f
 
-        // Fat morph
-        info.nameToIndex[MorphNames.FAT_GLOBAL]?.let { idx ->
-            w[idx] = fat01
-        } ?: Log.d("MORPH", "fat_global NOT FOUND in this renderable")
+            // Fat morph
+            info.nameToIndex[MorphNames.FAT_GLOBAL]?.let { idx ->
+                if (idx < w.size) {
+                    w[idx] = fat01
+                }
+            } ?: Log.d("MORPH", "fat_global NOT FOUND in this renderable")
 
-        // Per‑group muscle morphs (can exceed 1.0 to exaggerate)
-        for ((name, value) in muscleTargets) {
-            info.nameToIndex[name]?.let { idx ->
-                w[idx] = value
+            // Per‑group muscle morphs - apply reduction factor when fat > 0.5
+            for ((name, value) in muscleTargets) {
+                info.nameToIndex[name]?.let { idx ->
+                    if (idx < w.size) {
+                        w[idx] = value * muscleReductionFactor
+                    }
+                }
             }
-        }
 
-        info.renderable.setMorphWeights(w, offset = 0)
+            info.renderable.setMorphWeights(w, offset = 0)
+        }
+    } catch (e: Exception) {
+        Log.e("BodyScoreFigure3D", "Error applying morphs", e)
     }
 }
 

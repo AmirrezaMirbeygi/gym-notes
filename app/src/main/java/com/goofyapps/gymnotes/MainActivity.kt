@@ -374,7 +374,7 @@ private fun parseGoals(json: String): Goals {
         val k = keys.next()
         map[k] = groupsObj.optInt(k, 0)
     }
-    return Goals(bodyFatPercent = bf.coerceIn(5f, 30f), groupScores = map)
+    return Goals(bodyFatPercent = bf.coerceIn(5f, 50f), groupScores = map)
 }
 
 private fun loadGoals(context: Context): Goals? {
@@ -1633,10 +1633,10 @@ private fun ProgressScreen(
     val groupScores = remember(muscleScores) { computeGroupScoresFromMuscles(muscleScores) }
 
     // Current body fat from profile
-    val bf = (profile.bodyFatPct ?: 15f).coerceIn(5f, 30f)
+    val bf = (profile.bodyFatPct ?: 15f).coerceIn(5f, 50f)
 
     // Goal overlays (if any)
-    val goalBf = goals?.bodyFatPercent?.coerceIn(5f, 30f)
+    val goalBf = goals?.bodyFatPercent?.coerceIn(5f, 50f)
     val goalGroupScores = goals?.groupScores.orEmpty()
 
     val scroll = rememberScrollState()
@@ -1721,9 +1721,9 @@ private fun ScoreBarsWithBodyFat(
         Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
 
             // Body fat row (RED)
-            val bf = bodyFatPercent.coerceIn(5f, 30f)
-            val bf01 = (bf - 5f) / 25f // 5% -> 0, 30% -> 1
-            val goalBf01 = goalBodyFatPercent?.coerceIn(5f, 30f)?.let { (it - 5f) / 25f }
+            val bf = bodyFatPercent.coerceIn(5f, 50f)
+            val bf01 = (bf - 5f) / 45f // 5% -> 0, 50% -> 1
+            val goalBf01 = goalBodyFatPercent?.coerceIn(5f, 50f)?.let { (it - 5f) / 45f }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text("Body Fat", color = Color.Red)
@@ -1826,7 +1826,7 @@ private fun GoalModeScreen(
 
     var goalBodyFat by remember(goals, profile) {
         mutableStateOf(
-            goals?.bodyFatPercent ?: (profile.bodyFatPct ?: 15f).coerceIn(5f, 30f)
+            goals?.bodyFatPercent ?: (profile.bodyFatPct ?: 15f).coerceIn(5f, 50f)
         )
     }
 
@@ -1900,7 +1900,7 @@ private fun GoalModeScreen(
                 Slider(
                     value = goalBodyFat,
                     onValueChange = { v ->
-                        goalBodyFat = v.coerceIn(5f, 30f)
+                        goalBodyFat = v.coerceIn(5f, 50f)
                         onGoalsChanged(
                             Goals(
                                 bodyFatPercent = goalBodyFat,
@@ -1910,7 +1910,7 @@ private fun GoalModeScreen(
                             )
                         )
                     },
-                    valueRange = 5f..30f
+                    valueRange = 5f..50f
                 )
 
                 Spacer(Modifier.height(6.dp))
@@ -2130,7 +2130,7 @@ private fun AIScreen(
     
     val muscleScores = remember(days, profile) { computeMuscleScores(days, profile) }
     val groupScores = remember(muscleScores) { computeGroupScoresFromMuscles(muscleScores) }
-    val bf = (profile.bodyFatPct ?: 15f).coerceIn(5f, 30f)
+    val bf = (profile.bodyFatPct ?: 15f).coerceIn(5f, 50f)
     
     // Track previous scores for comparison
     var previousScores by remember { mutableStateOf<Map<String, Int>>(groupScores) }

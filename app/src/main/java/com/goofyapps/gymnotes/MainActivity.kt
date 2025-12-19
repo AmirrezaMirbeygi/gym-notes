@@ -27,12 +27,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -42,6 +47,8 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -67,6 +74,11 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -168,6 +180,57 @@ class MainActivity : ComponentActivity() {
 
 // -------------------- PERSISTENCE --------------------
 
+private data class ChatMessage(
+    val text: String,
+    val isUser: Boolean,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+private fun serializeChatHistory(messages: List<ChatMessage>): String {
+    val jsonArray = JSONArray()
+    for (msg in messages) {
+        val obj = JSONObject()
+        obj.put("text", msg.text)
+        obj.put("isUser", msg.isUser)
+        obj.put("timestamp", msg.timestamp)
+        jsonArray.put(obj)
+    }
+    return jsonArray.toString()
+}
+
+private fun parseChatHistory(json: String): List<ChatMessage> {
+    return try {
+        val jsonArray = JSONArray(json)
+        val messages = mutableListOf<ChatMessage>()
+        for (i in 0 until jsonArray.length()) {
+            val obj = jsonArray.getJSONObject(i)
+            messages.add(
+                ChatMessage(
+                    text = obj.getString("text"),
+                    isUser = obj.getBoolean("isUser"),
+                    timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                )
+            )
+        }
+        messages
+    } catch (e: Exception) {
+        emptyList()
+    }
+}
+
+private fun loadChatHistory(context: Context): List<ChatMessage> {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_CHAT_HISTORY, null) ?: return emptyList()
+    return parseChatHistory(json)
+}
+
+private fun saveChatHistory(context: Context, messages: List<ChatMessage>) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_CHAT_HISTORY, serializeChatHistory(messages))
+        .apply()
+}
+
 private const val PREFS_NAME = "gym_notes_prefs"
 private const val KEY_DATA = "workout_data"
 private const val KEY_PROFILE = "profile_json"
@@ -177,6 +240,8 @@ private const val KEY_AI_FRONT_PHOTO = "ai_front_photo_uri"
 private const val KEY_AI_BACK_PHOTO = "ai_back_photo_uri"
 private const val KEY_AI_GENERATED_IMAGE = "ai_generated_image_uri"
 private const val KEY_SHOW_AI_IMAGE = "show_ai_image_toggle"
+private const val KEY_CHAT_HISTORY = "chat_history"
+private const val KEY_ANALYSIS_RESULT = "analysis_result"
 
 private enum class UnitSystem { METRIC, IMPERIAL }
 
@@ -2125,6 +2190,18 @@ private fun loadAIGeneratedImageUri(context: Context): Uri? {
     return uriString?.let { Uri.parse(it) }
 }
 
+private fun loadAnalysisResult(context: Context): String? {
+    return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_ANALYSIS_RESULT, null)
+}
+
+private fun saveAnalysisResult(context: Context, result: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_ANALYSIS_RESULT, result)
+        .apply()
+}
+
 // -------------------- AI SCREEN --------------------
 
 @Composable
@@ -2205,31 +2282,38 @@ private fun AIScreen(
     
     val scroll = rememberScrollState()
     
-    var comprehensiveAnalysisResult by remember { mutableStateOf<String?>(null) }
+    var comprehensiveAnalysisResult by remember { 
+        mutableStateOf<String?>(loadAnalysisResult(context))
+    }
     var isAnalyzing by remember { mutableStateOf(false) }
     
-    // Auto-run comprehensive analysis when photos are available
-    LaunchedEffect(frontPhotoUri, backPhotoUri, groupScores, goals) {
-        if (frontPhotoUri != null && backPhotoUri != null && !isAnalyzing && comprehensiveAnalysisResult == null) {
+    // Manual analysis trigger function
+    fun triggerAnalysis() {
+        if (frontPhotoUri != null && backPhotoUri != null && !isAnalyzing) {
             isAnalyzing = true
-            aiService.comprehensiveAnalysis(
-                frontPhotoUri = frontPhotoUri,
-                backPhotoUri = backPhotoUri,
-                currentScores = groupScores,
-                bodyFatPercent = bf,
-                goals = goals?.groupScores,
-                goalBodyFat = goals?.bodyFatPercent,
-                days = days
-            ).fold(
-                onSuccess = { result ->
-                    comprehensiveAnalysisResult = result
-                    isAnalyzing = false
-                },
-                onFailure = { e ->
-                    aiError = "Analysis failed: ${e.message}"
-                    isAnalyzing = false
-                }
-            )
+            comprehensiveAnalysisResult = null
+            aiError = null
+            coroutineScope.launch {
+                aiService.comprehensiveAnalysis(
+                    frontPhotoUri = frontPhotoUri!!,
+                    backPhotoUri = backPhotoUri!!,
+                    currentScores = groupScores,
+                    bodyFatPercent = bf,
+                    goals = goals?.groupScores,
+                    goalBodyFat = goals?.bodyFatPercent,
+                    days = days
+                ).fold(
+                    onSuccess = { result ->
+                        comprehensiveAnalysisResult = result
+                        saveAnalysisResult(context, result)
+                        isAnalyzing = false
+                    },
+                    onFailure = { e ->
+                        aiError = "Analysis failed: ${e.message}"
+                        isAnalyzing = false
+                    }
+                )
+            }
         }
     }
     
@@ -2259,7 +2343,8 @@ private fun AIScreen(
                 comprehensiveAnalysisResult = comprehensiveAnalysisResult,
                 isAnalyzing = isAnalyzing,
                 aiError = aiError,
-                context = context
+                context = context,
+                onRefreshAnalysis = { triggerAnalysis() }
             )
             1 -> ChatTab(
                 days = days,
@@ -2282,7 +2367,8 @@ private fun AnalysisTab(
     comprehensiveAnalysisResult: String?,
     isAnalyzing: Boolean,
     aiError: String?,
-    context: Context
+    context: Context,
+    onRefreshAnalysis: () -> Unit
 ) {
     val scroll = rememberScrollState()
     
@@ -2293,7 +2379,7 @@ private fun AnalysisTab(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Photo Upload Section
+        // Body Photos Section
         Card(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -2307,100 +2393,42 @@ private fun AnalysisTab(
                 )
                 
                 Text(
-                    "Upload front and back full body photos for AI analysis. This is a one-time setup.",
+                    "Upload front and back full body photos for AI analysis.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.alpha(0.7f)
                 )
                 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                OutlinedButton(
+                    onClick = {
+                        // Launch front photo first, then back
+                        if (frontPhotoUri == null) {
+                            frontPhotoLauncher.launch("image/*")
+                        } else if (backPhotoUri == null) {
+                            backPhotoLauncher.launch("image/*")
+                        } else {
+                            // Both photos exist, allow changing front photo
+                            frontPhotoLauncher.launch("image/*")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    // Front Photo
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (frontPhotoUri != null) {
-                            var bitmap by remember(frontPhotoUri) { mutableStateOf<Bitmap?>(null) }
-                            
-                            LaunchedEffect(frontPhotoUri) {
-                                bitmap = runCatching {
-                                    context.contentResolver.openInputStream(frontPhotoUri!!)
-                                        ?.use { BitmapFactory.decodeStream(it) }
-                                }.getOrNull()
-                            }
-                            
-                            bitmap?.let {
-                                Image(
-                                    bitmap = it.asImageBitmap(),
-                                    contentDescription = "Front photo",
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(200.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                )
-                            }
-                            
-                            Button(onClick = { frontPhotoLauncher.launch("image/*") }) {
-                                Text("Change Front Photo")
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = { frontPhotoLauncher.launch("image/*") },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Upload Front Photo")
-                            }
-                        }
-                    }
-                    
-                    // Back Photo
-                    Column(
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (backPhotoUri != null) {
-                            var bitmap by remember(backPhotoUri) { mutableStateOf<Bitmap?>(null) }
-                            
-                            LaunchedEffect(backPhotoUri) {
-                                bitmap = runCatching {
-                                    context.contentResolver.openInputStream(backPhotoUri!!)
-                                        ?.use { BitmapFactory.decodeStream(it) }
-                                }.getOrNull()
-                            }
-                            
-                            bitmap?.let {
-                                Image(
-                                    bitmap = it.asImageBitmap(),
-                                    contentDescription = "Back photo",
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(200.dp)
-                                        .clip(RoundedCornerShape(8.dp))
-                                )
-                            }
-                            
-                            Button(onClick = { backPhotoLauncher.launch("image/*") }) {
-                                Text("Change Back Photo")
-                            }
-                        } else {
-                            OutlinedButton(
-                                onClick = { backPhotoLauncher.launch("image/*") },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text("Upload Back Photo")
-                            }
-                        }
-                    }
+                    Text(if (frontPhotoUri == null || backPhotoUri == null) "Add Body Photos" else "Change Photos")
+                }
+                
+                if (frontPhotoUri != null && backPhotoUri != null) {
+                    Text(
+                        "Photos uploaded. Use refresh button below to generate analysis.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
             }
         }
         
-        // AI Generated Visualization
-        aiGeneratedImageUri?.let { imageUri ->
+        // AI Generated Visualization (show this instead of uploaded photos)
+        if (aiGeneratedImageUri != null) {
+            val imageUri = aiGeneratedImageUri
             Card(
                 modifier = Modifier.fillMaxWidth()
             ) {
@@ -2445,7 +2473,7 @@ private fun AnalysisTab(
             }
         }
         
-        // Automatic Analysis Section
+        // Analysis Section
         Card(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -2453,20 +2481,40 @@ private fun AnalysisTab(
                 modifier = Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Text(
-                    "Automatic Analysis",
-                    style = MaterialTheme.typography.titleMedium
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Analysis",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    
+                    Button(
+                        onClick = onRefreshAnalysis,
+                        enabled = frontPhotoUri != null && backPhotoUri != null && !isAnalyzing,
+                        modifier = Modifier.height(36.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Refresh,
+                            contentDescription = "Refresh",
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Refresh")
+                    }
+                }
                 
                 Text(
-                    "Gymini automatically analyzes your body photos, current scores, and goals to provide a full analysis with specific recommendations on what to do and how much to do to reach your goals.",
+                    "Gymini analyzes your body photos, current scores, and goals to provide a full analysis with specific recommendations on what to do and how much to do to reach your goals.",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.alpha(0.7f)
                 )
                 
                 if (frontPhotoUri == null || backPhotoUri == null) {
                     Text(
-                        "Upload front and back photos above to enable automatic analysis.",
+                        "Upload body photos above to enable analysis.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(top = 8.dp)
@@ -2486,28 +2534,14 @@ private fun AnalysisTab(
                     }
                     
                     comprehensiveAnalysisResult?.let { result ->
-                        Card(
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.primaryContainer
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Text(
-                                    "Full Analysis & Action Plan",
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                                Text(
-                                    result,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onPrimaryContainer
-                                )
-                            }
-                        }
+                        HorizontalDivider(
+                            modifier = Modifier.padding(vertical = 12.dp)
+                        )
+                        
+                        MarkdownText(
+                            text = result,
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                 }
             }
@@ -2537,122 +2571,225 @@ private fun ChatTab(
     aiService: GeminiAIService,
     coroutineScope: CoroutineScope
 ) {
-    val scroll = rememberScrollState()
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var chatMessages by remember { mutableStateOf(loadChatHistory(context)) }
+    var promptText by remember { mutableStateOf("") }
+    var isPromptLoading by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
     
-    Column(
-        Modifier
-            .fillMaxSize()
-            .verticalScroll(scroll)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Card(
-            modifier = Modifier.fillMaxWidth()
+    // Scroll to bottom when new message is added
+    LaunchedEffect(chatMessages.size) {
+        if (chatMessages.isNotEmpty()) {
+            listState.animateScrollToItem(chatMessages.size - 1)
+        }
+    }
+    
+    Box(modifier = Modifier.fillMaxSize()) {
+        // Messages list
+        LazyColumn(
+            state = listState,
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 80.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                Text(
-                    "Chat with Gymini",
-                    style = MaterialTheme.typography.titleMedium
-                )
-                
-                Text(
-                    "Chat with Gymini, and it will answer incorporating your data. Your current workout data, muscle scores, and body fat percentage are automatically included as context.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.alpha(0.7f)
-                )
-                
-                var promptText by remember { mutableStateOf("") }
-                var promptResponse by remember { mutableStateOf<String?>(null) }
-                var isPromptLoading by remember { mutableStateOf(false) }
-                var promptError by remember { mutableStateOf<String?>(null) }
-                
-                OutlinedTextField(
-                    value = promptText,
-                    onValueChange = { promptText = it },
+            items(chatMessages) { message ->
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("e.g., How can I improve my chest development?") },
-                    maxLines = 4,
-                    enabled = !isPromptLoading
-                )
-                
-                Button(
-                    onClick = {
-                        if (promptText.isNotBlank()) {
-                            isPromptLoading = true
-                            promptError = null
-                            promptResponse = null
-                            
-                            coroutineScope.launch {
-                                aiService.sendCustomPrompt(
-                                    prompt = promptText,
-                                    days = days,
-                                    currentScores = groupScores,
-                                    bodyFatPercent = bf
-                                ).fold(
-                                    onSuccess = { response ->
-                                        promptResponse = response
-                                        isPromptLoading = false
-                                    },
-                                    onFailure = { e ->
-                                        promptError = "Failed to get response: ${e.message}"
-                                        isPromptLoading = false
-                                    }
-                                )
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isPromptLoading && promptText.isNotBlank()
+                    horizontalArrangement = if (message.isUser) Arrangement.End else Arrangement.Start
                 ) {
-                    if (isPromptLoading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    } else {
-                        Text("Send Prompt")
+                    Card(
+                        modifier = Modifier
+                            .fillMaxWidth(0.75f)
+                            .padding(horizontal = 4.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (message.isUser) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.surfaceVariant
+                            }
+                        ),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Text(
+                            text = message.text,
+                            modifier = Modifier.padding(12.dp),
+                            color = if (message.isUser) {
+                                MaterialTheme.colorScheme.onPrimary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            },
+                            style = MaterialTheme.typography.bodyMedium
+                        )
                     }
                 }
-                
-                if (isPromptLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                }
-                
-                promptError?.let { error ->
-                    Text(
-                        error,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-                
-                promptResponse?.let { response ->
-                    Card(
+            }
+            
+            if (isPromptLoading) {
+                item {
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.primaryContainer
-                        )
+                        horizontalArrangement = Arrangement.Start
                     ) {
-                        Column(
-                            modifier = Modifier.padding(16.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth(0.75f)
+                                .padding(horizontal = 4.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                            ),
+                            shape = RoundedCornerShape(16.dp)
                         ) {
-                            Text(
-                                "Gymini's Response",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                            Text(
-                                response,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
+                            Row(
+                                modifier = Modifier.padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                LinearProgressIndicator(
+                                    modifier = Modifier.weight(1f).height(4.dp)
+                                )
+                                Text(
+                                    "Thinking...",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
                     }
                 }
             }
         }
+        
+        // Input box at bottom
+        Row(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            OutlinedTextField(
+                value = promptText,
+                onValueChange = { promptText = it },
+                modifier = Modifier
+                    .weight(1f)
+                    .heightIn(min = 48.dp, max = 120.dp),
+                placeholder = { Text("Type a message...") },
+                maxLines = 4,
+                enabled = !isPromptLoading,
+                shape = RoundedCornerShape(24.dp)
+            )
+            
+            FloatingActionButton(
+                onClick = {
+                    if (promptText.isNotBlank() && !isPromptLoading) {
+                        val userMessage = promptText
+                        promptText = ""
+                        
+                        // Add user message
+                        val newMessages = chatMessages + ChatMessage(userMessage, isUser = true)
+                        chatMessages = newMessages
+                        saveChatHistory(context, newMessages)
+                        
+                        isPromptLoading = true
+                        
+                        coroutineScope.launch {
+                            aiService.sendCustomPrompt(
+                                prompt = userMessage,
+                                days = days,
+                                currentScores = groupScores,
+                                bodyFatPercent = bf
+                            ).fold(
+                                onSuccess = { response ->
+                                    val updatedMessages = chatMessages + ChatMessage(response, isUser = false)
+                                    chatMessages = updatedMessages
+                                    saveChatHistory(context, updatedMessages)
+                                    isPromptLoading = false
+                                },
+                                onFailure = { e ->
+                                    val errorMessage = "Sorry, I encountered an error: ${e.message}"
+                                    val updatedMessages = chatMessages + ChatMessage(errorMessage, isUser = false)
+                                    chatMessages = updatedMessages
+                                    saveChatHistory(context, updatedMessages)
+                                    isPromptLoading = false
+                                }
+                            )
+                        }
+                    }
+                },
+                modifier = Modifier.size(48.dp),
+                containerColor = MaterialTheme.colorScheme.primary
+            ) {
+                Icon(
+                    Icons.Filled.Send,
+                    contentDescription = "Send",
+                    tint = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+        }
     }
+}
+
+// -------------------- MARKDOWN PARSER --------------------
+
+@Composable
+private fun MarkdownText(text: String, style: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium) {
+    val annotatedString = remember(text) {
+        buildAnnotatedString {
+            var remaining = text
+            while (remaining.isNotEmpty()) {
+                // Check for header (###)
+                if (remaining.startsWith("### ")) {
+                    val endIndex = remaining.indexOf('\n').takeIf { it > 0 } ?: remaining.length
+                    val headerText = remaining.substring(4, endIndex).trim()
+                    withStyle(style = SpanStyle(fontWeight = FontWeight.Bold, fontSize = style.fontSize * 1.2f)) {
+                        append(headerText)
+                    }
+                    if (endIndex < remaining.length) {
+                        append("\n\n")
+                    }
+                    remaining = remaining.substring((endIndex + 1).coerceAtMost(remaining.length))
+                }
+                // Check for bold (**text**)
+                else if (remaining.startsWith("**")) {
+                    val endBold = remaining.indexOf("**", 2)
+                    if (endBold > 0) {
+                        val boldText = remaining.substring(2, endBold)
+                        withStyle(style = SpanStyle(fontWeight = FontWeight.Bold)) {
+                            append(boldText)
+                        }
+                        remaining = remaining.substring(endBold + 2)
+                    } else {
+                        // No closing **, just append as normal
+                        append(remaining[0])
+                        remaining = remaining.substring(1)
+                    }
+                }
+                // Regular text
+                else {
+                    val nextHeader = remaining.indexOf("### ")
+                    val nextBold = remaining.indexOf("**")
+                    val nextSpecial = when {
+                        nextHeader >= 0 && nextBold >= 0 -> minOf(nextHeader, nextBold)
+                        nextHeader >= 0 -> nextHeader
+                        nextBold >= 0 -> nextBold
+                        else -> Int.MAX_VALUE
+                    }
+                    if (nextSpecial < Int.MAX_VALUE) {
+                        append(remaining.substring(0, nextSpecial))
+                        remaining = remaining.substring(nextSpecial)
+                    } else {
+                        append(remaining)
+                        remaining = ""
+                    }
+                }
+            }
+        }
+    }
+    
+    Text(annotatedString, style = style)
 }
 
 // -------------------- SETTINGS SCREEN --------------------

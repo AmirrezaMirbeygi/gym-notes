@@ -107,8 +107,8 @@ fun BodyScoreFigure3D(
     val nestedScrollConnection = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                // Only consume drag events to prevent parent scrolling when touching the 3D figure
-                return if (source == NestedScrollSource.Drag) available else Offset.Zero
+                // Consume all scroll events to prevent parent scrolling when touching the 3D figure
+                return available
             }
         }
     }

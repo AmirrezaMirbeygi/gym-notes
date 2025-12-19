@@ -10,6 +10,10 @@ A comprehensive Android fitness tracking app built with Kotlin and Jetpack Compo
 - Track weight progression over time with visual charts
 - Support for custom muscle groups and exercises
 - Video attachments for exercise demonstrations
+- **Weekly Schedule**: Plan your workouts across the week (Monday-Sunday)
+  - Add exercise cards or rest days to specific days
+  - Organize by muscle groups
+  - Easy drag-and-drop interface
 
 ### 📊 Progress Monitoring
 - **Muscle Group Scoring**: Automatic scoring system based on workout data
@@ -19,12 +23,18 @@ A comprehensive Android fitness tracking app built with Kotlin and Jetpack Compo
 - **Goal Tracking**: Visual indicators showing progress toward your goals
 
 ### 🤖 AI-Powered Insights (Gymini)
-- **Photo Analysis**: Upload front and back body photos for AI analysis
-- **Muscle Mass Visualization**: AI-generated visualizations based on your photos and fitness metrics
-- **Workout Suggestions**: Personalized recommendations based on your exercise data
-- **Progress Analysis**: Get insights on which muscle groups need more work
-- **Custom Prompts**: Ask any fitness-related question and get personalized AI responses with your workout context
-- **Toggle Visualization**: Switch between 3D model and AI-generated images
+- **Analysis Tab**:
+  - Upload front and back body photos for comprehensive AI analysis
+  - Get detailed fitness analysis with personalized recommendations
+  - View AI-generated muscle mass visualizations
+  - Receive schedule optimization suggestions based on your weekly plan
+  - All analysis results persist across app restarts
+- **Chat Tab**:
+  - WhatsApp-style chat interface with Gymini
+  - Ask any fitness-related question and get personalized responses
+  - Your workout data, muscle scores, and body fat are automatically included as context
+  - Chat history is saved and retained
+- **Toggle Visualization**: Switch between 3D model and AI-generated images in Progress/Goal Mode tabs
 
 ### ⚙️ Customization
 - **Unit System**: Toggle between metric (kg/cm) and imperial (lb/ft) units
@@ -73,9 +83,7 @@ app/
 │   │   │   └── MuscleTaxonomy.kt       # Muscle group definitions
 │   │   ├── assets/
 │   │   │   └── models/
-│   │   │       ├── body_morph18.glb    # 3D body models
-│   │   │       ├── body_morph19.glb
-│   │   │       └── body_morph20.glb
+│   │   │       └── body_morph25.glb    # 3D body model with morph targets
 │   │   └── res/                        # Resources (drawables, values, etc.)
 │   └── build.gradle.kts               # App dependencies and configuration
 ```
@@ -92,9 +100,11 @@ app/
 - GLB model support for body visualization
 
 ### AI Integration
-- **Google Generative AI SDK**: Gemini AI integration
-  - Text analysis and suggestions
-  - Image generation (Gemini 2.5 Flash Image)
+- **Google Generative AI SDK** (v0.2.2): Gemini AI integration
+  - Text analysis and comprehensive fitness analysis
+  - Schedule optimization suggestions
+  - Custom prompt responses with workout context
+  - Image generation (Gemini 2.5 Flash Image - in progress)
 
 ### Other
 - **Compose Reorderable**: Drag-and-drop reordering
@@ -105,11 +115,13 @@ app/
 ### Getting Started
 
 1. **Set Up Profile**: Go to Settings → Profile and enter your weight, height, body fat percentage, and sex
-2. **Add Workouts**: Navigate to the Workout tab and create workout days
+2. **Add Workouts**: Navigate to the Workout tab → Muscles sub-tab and create workout days
 3. **Add Exercises**: For each workout day, add exercises with sets, reps, and weights
-4. **Track Progress**: View your progress in the Progress tab with 3D visualization and charts
-5. **Set Goals**: Use Goal Mode to set target scores for muscle groups
-6. **AI Analysis**: Use the Gymini tab to upload photos and get AI-powered insights
+4. **Plan Schedule**: Use the Workout tab → Schedule sub-tab to plan your weekly workouts
+5. **Track Progress**: View your progress in the Progress tab with 3D visualization and charts
+6. **Set Goals**: Use Goal Mode (via "Goal" button) to set target scores for muscle groups and body fat
+7. **AI Analysis**: Use the Gymini tab → Analysis sub-tab to upload photos and get AI-powered insights
+8. **Chat with AI**: Use the Gymini tab → Chat sub-tab to ask fitness questions
 
 ### Muscle Group Scoring
 
@@ -121,11 +133,26 @@ The app automatically calculates scores for each muscle group based on:
 
 ### AI Features (Gymini)
 
-1. **Upload Photos**: Upload front and back full-body photos (one-time setup)
-2. **Analyze**: Click "Analyze with AI" to get insights and generate visualizations
-3. **View Results**: See AI-generated muscle mass visualizations and suggestions
-4. **Ask Questions**: Use the "Ask Gymini" section to ask any fitness-related question. Your current workout data, muscle scores, and body fat percentage are automatically included as context for personalized responses
-5. **Toggle View**: In Progress tab, toggle between 3D model and AI-generated image
+#### Analysis Tab
+1. **Upload Photos**: Add front and back full-body photos for analysis
+2. **Visual Assessment**: View AI-generated muscle mass visualizations
+3. **Comprehensive Analysis**: 
+   - Click the refresh button to get detailed analysis
+   - Analysis includes current status, goals, workout history, and personalized action plan
+   - Results are saved and persist across app restarts
+4. **Schedule Suggestions**: 
+   - Get AI-powered recommendations for optimizing your weekly workout schedule
+   - Suggestions focus on muscle group distribution, weak areas, and rest day optimization
+   - Results are saved and can be refreshed anytime
+
+#### Chat Tab
+1. **Chat with Gymini**: WhatsApp-style interface for asking fitness questions
+2. **Context-Aware**: Your workout data, muscle scores, and body fat are automatically included
+3. **Persistent History**: All conversations are saved and retained
+
+#### Visualization Toggle
+- In Progress and Goal Mode tabs, toggle between 3D model and AI-generated image
+- Toggle state is saved and persists across app restarts
 
 ## Configuration
 
@@ -144,15 +171,31 @@ Switch between metric and imperial units in Settings → Units. All data is stor
 
 ## Data Storage
 
-- **SharedPreferences**: Used for storing workout data, profile, goals, and settings
-- **JSON Format**: Workout data is serialized to JSON for export/import
-- **Local Storage**: Photos and generated images are stored in app cache
+- **SharedPreferences**: Used for storing workout data, profile, goals, settings, and AI data
+  - Critical data (workouts, profile, goals, schedule, chat history, analysis) uses synchronous `.commit()` to prevent data loss
+  - Preferences (unit system, UI toggles) use asynchronous `.apply()` for better performance
+- **JSON Format**: Workout data, goals, schedule, and chat history are serialized to JSON
+- **Local Storage**: Photos and generated images are stored in app cache directory
+- **Data Persistence**: All user data persists across app restarts with proper error handling
+
+## Technical Improvements
+
+- ✅ **Data Safety**: Critical user data uses synchronous `.commit()` to prevent data loss on crashes
+- ✅ **Null Safety**: All unsafe null assertions removed, proper null handling throughout
+- ✅ **Error Handling**: Robust JSON parsing with fallback values and error recovery
+- ✅ **API Compatibility**: Replaced deprecated `Uri.fromFile()` with modern file URI handling
+- ✅ **Code Quality**: Comprehensive technical debt review and fixes applied
 
 ## Known Issues / TODOs
 
 - [ ] Implement Gemini 2.5 Flash Image generation (API structure verification needed)
-- [x] Add prompt function to Gymini tab
-- [ ] Improve image extraction from Gemini API responses
+- [x] Add prompt function to Gymini tab (Chat tab)
+- [x] Add schedule feature with weekly planning
+- [x] Add schedule suggestions from AI
+- [x] Add comprehensive analysis with persistence
+- [x] Improve data persistence and error handling
+- [ ] Move Gemini API key to secure backend proxy (security improvement)
+- [ ] Add image extraction from Gemini API responses when image generation is implemented
 
 ## Contributing
 
@@ -168,5 +211,17 @@ For issues and questions, please open an issue on the repository.
 
 ---
 
-**Note**: This app requires a Gemini API key for AI features. Get yours at [Google AI Studio](https://makersuite.google.com/app/apikey).
+**Note**: This app requires a Gemini API key for AI features. Get yours at [Google AI Studio](https://aistudio.google.com/app/apikey).
+
+## Version
+
+Current version: **1.2.1** (versionCode: 6)
+
+### Recent Updates
+- Added weekly schedule planning feature
+- Enhanced Gymini with Analysis and Chat sub-tabs
+- Added schedule optimization suggestions
+- Improved data persistence and error handling
+- Fixed critical technical debt issues
+- Enhanced UI with collapsible cards and better organization
 

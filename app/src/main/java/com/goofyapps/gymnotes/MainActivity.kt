@@ -48,6 +48,18 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FitnessCenter
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Logout
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.tasks.await
+import android.content.ClipData
+import android.content.ClipboardManager
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
@@ -111,6 +123,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlin.math.ln
 import kotlin.math.max
@@ -255,6 +268,7 @@ private const val KEY_CHAT_HISTORY = "chat_history"
 private const val KEY_ANALYSIS_RESULT = "analysis_result"
 private const val KEY_SCHEDULE = "schedule"
 private const val KEY_SCHEDULE_SUGGESTIONS = "schedule_suggestions"
+private const val KEY_LAST_CLOUD_BACKUP = "last_cloud_backup_timestamp"
 
 private enum class UnitSystem { METRIC, IMPERIAL }
 
@@ -302,10 +316,10 @@ private fun serializeDays(days: List<WorkoutDay>): String {
 
 private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
     return try {
-        val daysArray = JSONArray(json)
-        val result = mutableListOf<WorkoutDay>()
+    val daysArray = JSONArray(json)
+    val result = mutableListOf<WorkoutDay>()
 
-        for (i in 0 until daysArray.length()) {
+    for (i in 0 until daysArray.length()) {
         val dayObj = daysArray.getJSONObject(i)
         val id = dayObj.optLong("id")
 
@@ -356,15 +370,15 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
             )
         }
 
-            result.add(
-                WorkoutDay(
-                    id = id,
-                    groupId = groupId,
-                    groupCustomName = groupCustomName,
-                    exercises = exercises
-                )
+        result.add(
+            WorkoutDay(
+                id = id,
+                groupId = groupId,
+                groupCustomName = groupCustomName,
+                exercises = exercises
             )
-        }
+        )
+    }
 
         result
     } catch (e: Exception) {
@@ -397,11 +411,11 @@ private fun serializeProfile(p: Profile): String =
 
 private fun parseProfile(json: String): Profile {
     return try {
-        val o = JSONObject(json)
-        val w = if (o.isNull("weightKg")) null else o.optDouble("weightKg").toFloat()
-        val h = if (o.isNull("heightCm")) null else o.optDouble("heightCm").toFloat()
-        val bf = if (o.isNull("bodyFatPct")) null else o.optDouble("bodyFatPct").toFloat()
-        val sex = o.optString("sex", "Unspecified")
+    val o = JSONObject(json)
+    val w = if (o.isNull("weightKg")) null else o.optDouble("weightKg").toFloat()
+    val h = if (o.isNull("heightCm")) null else o.optDouble("heightCm").toFloat()
+    val bf = if (o.isNull("bodyFatPct")) null else o.optDouble("bodyFatPct").toFloat()
+    val sex = o.optString("sex", "Unspecified")
         Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex)
     } catch (e: Exception) {
         android.util.Log.e("MainActivity", "Error parsing profile JSON", e)
@@ -447,7 +461,7 @@ private fun saveUnitSystem(context: Context, unitSystem: UnitSystem) {
 
 // -------------------- GOALS --------------------
 
-private data class Goals(
+internal data class Goals(
     val bodyFatPercent: Float,
     val groupScores: Map<String, Int>
 )
@@ -557,6 +571,583 @@ private fun saveSchedule(context: Context, schedule: Schedule) {
         .commit()
 }
 
+// -------------------- COMPREHENSIVE EXPORT/IMPORT (STRING FORMAT) --------------------
+
+/**
+ * Export all user data to a string format including:
+ * - Profile (weight, height, body fat, sex)
+ * - Current muscle scores
+ * - All workout days (with preset/custom flags)
+ * - All exercise cards (with preset/custom flags)
+ * - Schedule
+ * - Email address
+ */
+private fun exportAllDataToString(
+    days: List<WorkoutDay>,
+    profile: Profile,
+    schedule: Schedule,
+    goals: Goals?,
+    email: String?
+): String {
+    val root = JSONObject()
+    
+    // Version for future compatibility
+    root.put("version", 1)
+    root.put("exportTimestamp", System.currentTimeMillis())
+    
+    // Email
+    root.put("email", email ?: "")
+    
+    // Profile
+    root.put("profile", JSONObject().apply {
+        put("weightKg", profile.weightKg?.toDouble() ?: JSONObject.NULL)
+        put("heightCm", profile.heightCm?.toDouble() ?: JSONObject.NULL)
+        put("bodyFatPct", profile.bodyFatPct?.toDouble() ?: JSONObject.NULL)
+        put("sex", profile.sex)
+    })
+    
+    // Current scores (computed from days and profile)
+    val muscleScores = computeMuscleScores(days, profile)
+    val groupScores = computeGroupScoresFromMuscles(muscleScores)
+    root.put("groupScores", JSONObject().apply {
+        groupScores.forEach { (k, v) -> put(k, v) }
+    })
+    root.put("muscleScores", JSONObject().apply {
+        muscleScores.forEach { (k, v) -> put(k, v) }
+    })
+    
+    // Goals
+    if (goals != null) {
+        root.put("goals", JSONObject().apply {
+            put("bodyFatPercent", goals.bodyFatPercent.toDouble())
+            val groupsObj = JSONObject()
+            goals.groupScores.forEach { (k, v) -> groupsObj.put(k, v) }
+            put("groups", groupsObj)
+        })
+    }
+    
+    // Workout days with preset/custom flags
+    // IMPORTANT: This exports ALL exercise cards from ALL workout days
+    val daysArray = JSONArray()
+    val allCardsExported = mutableSetOf<Long>() // Track exported card IDs to ensure completeness
+    for (day in days) {
+        val dayObj = JSONObject().apply {
+            put("id", day.id)
+            // Flag: isPresetGroup = true if groupId is not null (preset), false if custom
+            put("isPresetGroup", day.groupId != null)
+            put("groupId", day.groupId ?: JSONObject.NULL)
+            put("groupCustomName", day.groupCustomName ?: JSONObject.NULL)
+            
+            val exArr = JSONArray()
+            // Export ALL exercise cards from this day
+            for (ex in day.exercises) {
+                allCardsExported.add(ex.id)
+                val exObj = JSONObject().apply {
+                    put("id", ex.id)
+                    put("equipmentName", ex.equipmentName)
+                    put("videoUri", ex.videoUri ?: JSONObject.NULL)
+                    put("sets", ex.sets)
+                    put("reps", ex.reps)
+                    put("weight", ex.weight?.toDouble() ?: JSONObject.NULL)
+                    put("weightUnit", ex.weightUnit)
+                    // Flag: isPresetMuscle = true if primaryMuscleId is not null (preset), false if custom
+                    put("isPresetMuscle", ex.primaryMuscleId != null)
+                    put("primaryMuscleId", ex.primaryMuscleId ?: JSONObject.NULL)
+                    put("primaryMuscleCustomName", ex.primaryMuscleCustomName ?: JSONObject.NULL)
+                    put("notes", ex.notes)
+                    
+                    val histArr = JSONArray()
+                    ex.weightHistory.forEach { e ->
+                        histArr.put(JSONObject().apply {
+                            put("t", e.t)
+                            put("w", e.w.toDouble())
+                        })
+                    }
+                    put("weightHistory", histArr)
+                }
+                exArr.put(exObj)
+            }
+            put("exercises", exArr)
+        }
+        daysArray.put(dayObj)
+    }
+    root.put("days", daysArray)
+    // Log total cards exported for verification - ensures ALL cards from ALL days are included
+    android.util.Log.d("Export", "Exported ${allCardsExported.size} unique exercise cards across ${days.size} workout days")
+    
+    // Schedule
+    root.put("schedule", JSONObject().apply {
+        schedule.forEach { (dayIndex, items) ->
+            val itemsArray = JSONArray()
+            items.forEach { item ->
+                when (item) {
+                    is ScheduleItem.ExerciseCard -> {
+                        itemsArray.put(JSONObject().apply {
+                            put("type", "exercise")
+                            put("cardId", item.cardId)
+                        })
+                    }
+                    is ScheduleItem.Rest -> {
+                        itemsArray.put(JSONObject().apply {
+                            put("type", "rest")
+                        })
+                    }
+                }
+            }
+            put(dayIndex.toString(), itemsArray)
+        }
+    })
+    
+    return root.toString()
+}
+
+/**
+ * Helper: Try to match a custom muscle group name to a preset
+ */
+private fun matchGroupNameToPreset(customName: String?): String? {
+    if (customName.isNullOrBlank()) return null
+    val normalized = customName.trim().lowercase()
+    return MuscleGroup.entries.firstOrNull { 
+        it.displayName.lowercase() == normalized || 
+        it.id.lowercase() == normalized 
+    }?.id
+}
+
+/**
+ * Helper: Try to match a custom muscle name to a preset
+ */
+private fun matchMuscleNameToPreset(customName: String?): String? {
+    if (customName.isNullOrBlank()) return null
+    val normalized = customName.trim().lowercase()
+    return Muscle.entries.firstOrNull { 
+        it.displayName.lowercase() == normalized || 
+        it.id.lowercase() == normalized 
+    }?.id
+}
+
+/**
+ * Import all user data from string format with preset recognition.
+ * Returns ImportResult with imported data and any errors.
+ */
+private data class ImportResult(
+    val days: MutableList<WorkoutDay>?,
+    val profile: Profile?,
+    val schedule: Schedule?,
+    val goals: Goals?,
+    val email: String?,
+    val success: Boolean,
+    val error: String? = null
+)
+
+private fun importAllDataFromString(jsonString: String): ImportResult {
+    return try {
+        val root = JSONObject(jsonString)
+        val version = root.optInt("version", 1)
+        
+        // Email
+        val email = root.optString("email").takeIf { it.isNotBlank() }
+        
+        // Profile
+        val profileObj = root.optJSONObject("profile")
+        val profile = if (profileObj != null) {
+            val w = if (profileObj.isNull("weightKg")) null else profileObj.optDouble("weightKg").toFloat()
+            val h = if (profileObj.isNull("heightCm")) null else profileObj.optDouble("heightCm").toFloat()
+            val bf = if (profileObj.isNull("bodyFatPct")) null else profileObj.optDouble("bodyFatPct").toFloat()
+            val sex = profileObj.optString("sex", "Unspecified")
+            Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex)
+        } else {
+            Profile()
+        }
+        
+        // Goals
+        val goalsObj = root.optJSONObject("goals")
+        val goals = if (goalsObj != null) {
+            val bf = goalsObj.optDouble("bodyFatPercent", 20.0).toFloat()
+            val groupsObj = goalsObj.optJSONObject("groups") ?: JSONObject()
+            val map = mutableMapOf<String, Int>()
+            val keys = groupsObj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                map[k] = groupsObj.optInt(k, 0)
+            }
+            Goals(bodyFatPercent = bf.coerceIn(5f, 50f), groupScores = map)
+        } else {
+            null
+        }
+        
+        // Workout days with preset recognition
+        val daysArray = root.optJSONArray("days") ?: JSONArray()
+        val days = mutableListOf<WorkoutDay>()
+        
+        for (i in 0 until daysArray.length()) {
+            val dayObj = daysArray.getJSONObject(i)
+            val id = dayObj.optLong("id")
+            
+            // Preset recognition for muscle groups
+            val isPresetGroup = dayObj.optBoolean("isPresetGroup", true)
+            val groupIdFromJson = dayObj.optString("groupId").takeIf { it.isNotBlank() }
+            val groupCustomNameFromJson = dayObj.optString("groupCustomName").takeIf { it.isNotBlank() }
+            
+            val (finalGroupId, finalGroupCustomName) = when {
+                // If marked as preset and has groupId, use it
+                isPresetGroup && groupIdFromJson != null -> groupIdFromJson to null
+                // If marked as custom, try to match to preset first
+                groupCustomNameFromJson != null -> {
+                    val matchedPreset = matchGroupNameToPreset(groupCustomNameFromJson)
+                    if (matchedPreset != null) {
+                        // Found a match - use preset
+                        matchedPreset to null
+                    } else {
+                        // No match - keep as custom
+                        null to groupCustomNameFromJson
+                    }
+                }
+                // Fallback: try to match groupId if present
+                groupIdFromJson != null -> {
+                    val matched = matchGroupNameToPreset(groupIdFromJson)
+                    matched to null
+                }
+                else -> null to null
+            }
+            
+            val exArr = dayObj.optJSONArray("exercises") ?: JSONArray()
+            val exercises = mutableListOf<ExerciseCard>()
+            
+            for (j in 0 until exArr.length()) {
+                val exObj = exArr.getJSONObject(j)
+                
+                // Preset recognition for muscles
+                val isPresetMuscle = exObj.optBoolean("isPresetMuscle", true)
+                val muscleIdFromJson = exObj.optString("primaryMuscleId").takeIf { it.isNotBlank() }
+                val muscleCustomNameFromJson = exObj.optString("primaryMuscleCustomName").takeIf { it.isNotBlank() }
+                
+                val (finalMuscleId, finalMuscleCustomName) = when {
+                    // If marked as preset and has muscleId, use it
+                    isPresetMuscle && muscleIdFromJson != null -> muscleIdFromJson to null
+                    // If marked as custom, try to match to preset first
+                    muscleCustomNameFromJson != null -> {
+                        val matchedPreset = matchMuscleNameToPreset(muscleCustomNameFromJson)
+                        if (matchedPreset != null) {
+                            // Found a match - use preset
+                            matchedPreset to null
+                        } else {
+                            // No match - keep as custom
+                            null to muscleCustomNameFromJson
+                        }
+                    }
+                    // Fallback: try to match muscleId if present
+                    muscleIdFromJson != null -> {
+                        val matched = matchMuscleNameToPreset(muscleIdFromJson)
+                        matched to null
+                    }
+                    else -> null to null
+                }
+                
+                val histArr = exObj.optJSONArray("weightHistory")
+                val histList = mutableListOf<WeightEntry>()
+                if (histArr != null) {
+                    for (k in 0 until histArr.length()) {
+                        val o = histArr.optJSONObject(k) ?: continue
+                        val t = o.optLong("t", 0L)
+                        val w = o.optDouble("w", Double.NaN)
+                        if (t > 0L && w.isFinite()) histList.add(WeightEntry(t, w.toFloat()))
+                    }
+                }
+                
+                val weight = if (exObj.isNull("weight")) null else exObj.getDouble("weight").toFloat()
+                
+                // Backward compat: seed history if missing but we have current weight
+                if (histList.isEmpty() && weight != null) {
+                    histList.add(WeightEntry(System.currentTimeMillis(), weight))
+                }
+                
+                exercises.add(
+                    ExerciseCard(
+                        id = exObj.optLong("id"),
+                        equipmentName = exObj.optString("equipmentName", ""),
+                        videoUri = if (exObj.isNull("videoUri")) null else exObj.getString("videoUri"),
+                        sets = exObj.optInt("sets", 0),
+                        reps = exObj.optInt("reps", 0),
+                        weight = weight,
+                        weightUnit = exObj.optString("weightUnit", "kg"),
+                        primaryMuscleId = finalMuscleId,
+                        primaryMuscleCustomName = finalMuscleCustomName,
+                        weightHistory = histList,
+                        notes = exObj.optString("notes", "")
+                    )
+                )
+            }
+            
+            days.add(
+                WorkoutDay(
+                    id = id,
+                    groupId = finalGroupId,
+                    groupCustomName = finalGroupCustomName,
+                    exercises = exercises
+                )
+            )
+        }
+        
+        // Schedule
+        val scheduleObj = root.optJSONObject("schedule")
+        val schedule = if (scheduleObj != null) {
+            val result = mutableMapOf<Int, List<ScheduleItem>>()
+            for (i in 0..6) {
+                val itemsArray = scheduleObj.optJSONArray(i.toString()) ?: JSONArray()
+                val items = mutableListOf<ScheduleItem>()
+                for (j in 0 until itemsArray.length()) {
+                    val itemObj = itemsArray.getJSONObject(j)
+                    when (itemObj.getString("type")) {
+                        "exercise" -> items.add(ScheduleItem.ExerciseCard(itemObj.getLong("cardId")))
+                        "rest" -> items.add(ScheduleItem.Rest)
+                    }
+                }
+                result[i] = items
+            }
+            result
+        } else {
+            emptyMap()
+        }
+        
+        ImportResult(
+            days = days,
+            profile = profile,
+            schedule = schedule,
+            goals = goals,
+            email = email,
+            success = true
+        )
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error importing data", e)
+        ImportResult(
+            days = null,
+            profile = null,
+            schedule = null,
+            goals = null,
+            email = null,
+            success = false,
+            error = e.message ?: "Unknown error"
+        )
+    }
+}
+
+// -------------------- CLOUD BACKUP --------------------
+
+private const val CLOUD_BACKUP_COLLECTION = "user_backups"
+private const val MILLIS_PER_MONTH = 30L * 24L * 60L * 60L * 1000L // ~30 days
+
+/**
+ * Get last cloud backup timestamp
+ */
+private fun getLastCloudBackupTimestamp(context: Context): Long {
+    return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getLong(KEY_LAST_CLOUD_BACKUP, 0L)
+}
+
+/**
+ * Save last cloud backup timestamp
+ */
+private fun saveLastCloudBackupTimestamp(context: Context, timestamp: Long) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putLong(KEY_LAST_CLOUD_BACKUP, timestamp)
+        .apply()
+}
+
+/**
+ * Check if monthly backup is due (30 days since last backup)
+ */
+private fun isMonthlyBackupDue(context: Context): Boolean {
+    val lastBackup = getLastCloudBackupTimestamp(context)
+    if (lastBackup == 0L) return true // Never backed up
+    val now = System.currentTimeMillis()
+    return (now - lastBackup) >= MILLIS_PER_MONTH
+}
+
+/**
+ * Upload user data to Firestore cloud backup
+ * Stores data under user's email, with monthly timestamp
+ */
+suspend fun uploadToCloudBackup(
+    context: Context,
+    email: String,
+    dataString: String
+): Result<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    try {
+        if (email.isBlank()) {
+            return@withContext Result.failure(Exception("Email is required for cloud backup"))
+        }
+        
+        android.util.Log.d("CloudBackup", "Starting upload for email: $email")
+        android.util.Log.d("CloudBackup", "Data string length: ${dataString.length}")
+        
+        // Check if data is too large (Firestore has 1MB document limit)
+        if (dataString.length > 900000) { // Leave some margin
+            android.util.Log.w("CloudBackup", "Data size (${dataString.length} bytes) is very large, may cause issues")
+        }
+        
+        val db = FirebaseFirestore.getInstance()
+        
+        // Verify Firebase Auth is working
+        val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+        val currentUser = auth.currentUser
+        if (currentUser == null || currentUser.email != email) {
+            android.util.Log.e("CloudBackup", "User not authenticated or email mismatch")
+            return@withContext Result.failure(Exception("Please sign in with Google to use cloud backup"))
+        }
+        
+        android.util.Log.d("CloudBackup", "User authenticated: ${currentUser.email}")
+        
+        // Test Firestore connectivity with a small write first (with short timeout)
+        try {
+            android.util.Log.d("CloudBackup", "Testing Firestore connectivity...")
+            val testDoc = db.collection("_test").document("connectivity")
+            kotlinx.coroutines.withTimeout(5000) { // 5 second test
+                testDoc.set(hashMapOf("test" to System.currentTimeMillis())).await()
+                testDoc.delete().await() // Clean up test document
+            }
+            android.util.Log.d("CloudBackup", "Firestore connectivity test passed")
+        } catch (e: Exception) {
+            android.util.Log.e("CloudBackup", "Firestore connectivity test failed", e)
+            return@withContext Result.failure(Exception("Unable to connect to backup service. Please check your internet connection."))
+        }
+        
+        val now = System.currentTimeMillis()
+        val monthKey = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date(now))
+        
+        // Document path: user_backups/{email}/months/{yyyy-MM}
+        val backupData = hashMapOf(
+            "email" to email,
+            "data" to dataString,
+            "timestamp" to now,
+            "month" to monthKey
+        )
+        
+        // Use email as document ID (sanitized) and month as subcollection
+        // Structure: user_backups/{email}/months/{yyyy-MM}
+        val emailDocRef = db.collection(CLOUD_BACKUP_COLLECTION).document(email)
+        val monthDocRef = emailDocRef.collection("months").document(monthKey)
+        
+        android.util.Log.d("CloudBackup", "Writing to Firestore: ${monthDocRef.path}")
+        
+        // Set with merge to update if exists - with longer timeout for actual data
+        try {
+            android.util.Log.d("CloudBackup", "Attempting Firestore write...")
+            kotlinx.coroutines.withTimeout(25000) { // 25 second timeout for actual upload
+                monthDocRef.set(backupData, SetOptions.merge()).await()
+            }
+            android.util.Log.d("CloudBackup", "Firestore write completed successfully")
+        } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
+            android.util.Log.e("CloudBackup", "Firestore error: ${e.code} - ${e.message}")
+            android.util.Log.e("CloudBackup", "Error details: ${e.cause?.message}")
+            // Provide user-friendly error messages (no technical details)
+            val userMessage = when (e.code) {
+                com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED -> 
+                    "Unable to upload backup. Please try again later."
+                com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAVAILABLE -> 
+                    "Backup service is temporarily unavailable. Please try again later."
+                com.google.firebase.firestore.FirebaseFirestoreException.Code.DEADLINE_EXCEEDED -> 
+                    "Upload timed out. Please check your internet connection and try again."
+                else -> "Upload failed. Please try again later."
+            }
+            throw Exception(userMessage, e)
+        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
+            android.util.Log.e("CloudBackup", "Timeout waiting for Firestore response")
+            throw Exception("Upload timed out. Please check your internet connection and try again.", e)
+        } catch (e: java.util.concurrent.TimeoutException) {
+            android.util.Log.e("CloudBackup", "Timeout waiting for Firestore response")
+            throw Exception("Upload timed out. Please check your internet connection and try again.", e)
+        } catch (e: Exception) {
+            android.util.Log.e("CloudBackup", "Unexpected error during Firestore write", e)
+            e.printStackTrace()
+            throw e
+        }
+        
+        // Update last backup timestamp
+        saveLastCloudBackupTimestamp(context, now)
+        
+        android.util.Log.d("CloudBackup", "Backup completed successfully")
+        Result.success("Backup uploaded successfully")
+    } catch (e: Exception) {
+        android.util.Log.e("CloudBackup", "Error uploading cloud backup", e)
+        e.printStackTrace()
+        Result.failure(e)
+    }
+}
+
+/**
+ * Retrieve latest cloud backup for user
+ */
+suspend fun retrieveLatestCloudBackup(email: String): Result<String> = 
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    try {
+        if (email.isBlank()) {
+            return@withContext Result.failure(Exception("Email is required"))
+        }
+        
+        val db = FirebaseFirestore.getInstance()
+        val emailDocRef = db.collection(CLOUD_BACKUP_COLLECTION).document(email)
+        val monthsCollection = emailDocRef.collection("months")
+        
+        // Get all monthly backups, sorted by timestamp descending
+        val querySnapshot = monthsCollection
+            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
+            .limit(1)
+            .get()
+            .await()
+        
+        if (querySnapshot.isEmpty) {
+            return@withContext Result.failure(Exception("No backup found for this email"))
+        }
+        
+        val doc = querySnapshot.documents[0]
+        val data = doc.data ?: return@withContext Result.failure(Exception("Backup data is empty"))
+        val dataString = data["data"] as? String ?: return@withContext Result.failure(Exception("Invalid backup format"))
+        
+        Result.success(dataString)
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error retrieving cloud backup", e)
+        Result.failure(e)
+    }
+}
+
+/**
+ * Auto-upload backup if monthly backup is due
+ */
+internal suspend fun checkAndUploadMonthlyBackup(
+    context: Context,
+    days: List<WorkoutDay>,
+    profile: Profile,
+    schedule: Schedule,
+    goals: Goals?,
+    email: String?
+) {
+    if (email.isNullOrBlank()) {
+        android.util.Log.d("MainActivity", "No email - skipping cloud backup")
+        return
+    }
+    
+    if (!isMonthlyBackupDue(context)) {
+        android.util.Log.d("MainActivity", "Monthly backup not due yet")
+        return
+    }
+    
+    try {
+        val dataString = exportAllDataToString(days, profile, schedule, goals, email)
+        val result = uploadToCloudBackup(context, email, dataString)
+        result.fold(
+            onSuccess = { 
+                android.util.Log.d("MainActivity", "Monthly backup uploaded: $it")
+            },
+            onFailure = { e ->
+                android.util.Log.e("MainActivity", "Failed to upload monthly backup", e)
+            }
+        )
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error in monthly backup check", e)
+    }
+}
+
 // -------------------- VIDEO --------------------
 
 private fun loadVideoThumbnail(context: Context, uri: Uri): Bitmap? {
@@ -612,89 +1203,27 @@ private fun AppRoot() {
     var unitSystem by remember { mutableStateOf(loadUnitSystem(context)) }
 
     var screen: Screen by remember { mutableStateOf(Screen.Workout) }
-
-    val exportLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-            if (uri != null) {
-                runCatching {
-                    context.contentResolver.openOutputStream(uri)?.use { out ->
-                        out.write(serializeDays(days).toByteArray())
-                    }
-                }
-            }
+    var schedule by remember { mutableStateOf(loadSchedule(context)) }
+    
+    // Monthly backup check on app start
+    val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        val auth = FirebaseAuth.getInstance()
+        val userEmail = auth.currentUser?.email
+        coroutineScope.launch {
+            checkAndUploadMonthlyBackup(context, days, profile, schedule, goals, userEmail)
         }
+    }
+    
+    // Update schedule when it changes
+    fun updateSchedule(newSchedule: Schedule) {
+        schedule = newSchedule
+        saveSchedule(context, newSchedule)
+    }
 
-    val importLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-            if (uri != null) {
-                runCatching {
-                    val json = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                    if (!json.isNullOrBlank()) {
-                        val imported = parseDaysFromJson(json)
-                        days.clear()
-                        days.addAll(imported)
-                        saveDays(context, days)
-                    }
-                }
-            }
-        }
-
-    var gearOpen by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var showUnits by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
-
-    @Composable
-    fun SettingsDropdown(
-        expanded: Boolean,
-        onDismiss: () -> Unit,
-        onShowProfile: () -> Unit,
-        onShowUnits: () -> Unit,
-        exportLauncher: ActivityResultLauncher<String>,
-        importLauncher: ActivityResultLauncher<Array<String>>,
-        onShowClearConfirm: () -> Unit
-    ) {
-        DropdownMenu(
-            expanded = expanded,
-            onDismissRequest = onDismiss
-        ) {
-            DropdownMenuItem(
-                text = { Text("Profile") },
-                onClick = {
-                    onDismiss()
-                    onShowProfile()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Units (kg / lb)") },
-                onClick = {
-                    onDismiss()
-                    onShowUnits()
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Export data") },
-                onClick = {
-                    onDismiss()
-                    exportLauncher.launch("gym_notes_backup.json")
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Import data") },
-                onClick = {
-                    onDismiss()
-                    importLauncher.launch(arrayOf("application/json", "text/*"))
-                }
-            )
-            DropdownMenuItem(
-                text = { Text("Clear all data") },
-                onClick = {
-                    onDismiss()
-                    onShowClearConfirm()
-                }
-            )
-        }
-    }
 
     fun topBar(title: String? = null, showBack: Boolean = false, onBack: (() -> Unit)? = null): @Composable () -> Unit = {
         TopAppBar(
@@ -771,7 +1300,15 @@ private fun AppRoot() {
                     days = days,
                     unitSystem = unitSystem,
                     onOpenDay = { idx -> screen = Screen.DayDetail(idx) },
-                    onSave = { saveDays(context, days) }
+                    onSave = { 
+                        saveDays(context, days)
+                        // Trigger monthly backup check after saving
+                        coroutineScope.launch {
+                            val auth = FirebaseAuth.getInstance()
+                            val userEmail = auth.currentUser?.email
+                            checkAndUploadMonthlyBackup(context, days, profile, schedule, goals, userEmail)
+                        }
+                    }
                 )
 
                 is Screen.Progress -> ProgressScreen(
@@ -800,15 +1337,33 @@ private fun AppRoot() {
                     }
                 )
 
-                is Screen.Settings -> SettingsScreen(
-                    profile = profile,
-                    unitSystem = unitSystem,
-                    onProfileClick = { showProfile = true },
-                    onUnitsClick = { showUnits = true },
-                    onExport = { exportLauncher.launch("gym_notes_backup.json") },
-                    onImport = { importLauncher.launch(arrayOf("application/json", "text/*")) },
-                    onClearData = { showClearConfirm = true }
-                )
+                is Screen.Settings -> {
+                    val auth = FirebaseAuth.getInstance()
+                    SettingsScreen(
+                        profile = profile,
+                        unitSystem = unitSystem,
+                        auth = auth,
+                        days = days,
+                        schedule = schedule,
+                        goals = goals,
+                        onProfileClick = { showProfile = true },
+                        onUnitsClick = { showUnits = true },
+                        onClearData = { showClearConfirm = true },
+                        onScheduleChanged = { newSchedule ->
+                            updateSchedule(newSchedule)
+                        },
+                        onProfileChanged = { newProfile ->
+                            profile = newProfile
+                            saveProfile(context, newProfile)
+                        },
+                        onGoalsChanged = { newGoals ->
+                            goals = newGoals
+                            if (newGoals != null) {
+                                saveGoals(context, newGoals)
+                            }
+                        }
+                    )
+                }
 
                 is Screen.ProgressGroupDetail -> ProgressGroupDetailScreen(
                     groupId = s.groupId,
@@ -2211,7 +2766,7 @@ private fun ProgressScreen(
         LaunchedEffect(Unit) {
             aiImageUri = loadAIGeneratedImageUri(context)
         }
-        
+
         BodyScoreFigure3D(
             scores = groupScores,
             bodyFatPercent = bf,
@@ -3430,12 +3985,164 @@ private fun MarkdownText(text: String, style: androidx.compose.ui.text.TextStyle
 private fun SettingsScreen(
     profile: Profile,
     unitSystem: UnitSystem,
+    auth: FirebaseAuth,
+    days: MutableList<WorkoutDay>,
+    schedule: Schedule,
+    goals: Goals?,
     onProfileClick: () -> Unit,
     onUnitsClick: () -> Unit,
-    onExport: () -> Unit,
-    onImport: () -> Unit,
-    onClearData: () -> Unit
+    onClearData: () -> Unit,
+    onScheduleChanged: (Schedule) -> Unit,
+    onProfileChanged: (Profile) -> Unit,
+    onGoalsChanged: (Goals?) -> Unit
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    
+    var currentUser by remember { mutableStateOf(auth.currentUser) }
+    var isSigningIn by remember { mutableStateOf(false) }
+    var signInError by remember { mutableStateOf<String?>(null) }
+    
+    // Listen for auth state changes
+    LaunchedEffect(Unit) {
+        auth.addAuthStateListener { firebaseAuth ->
+            currentUser = firebaseAuth.currentUser
+        }
+    }
+    
+    fun getWebClientIdFromGoogleServices(context: Context): String? {
+        return try {
+            // Try multiple paths to find google-services.json
+            val possiblePaths = listOf(
+                // Path 1: From project root (for development)
+                java.io.File(context.filesDir.parentFile?.parentFile?.parentFile, "app/google-services.json"),
+                // Path 2: From app module root
+                java.io.File(context.filesDir.parentFile?.parentFile, "app/google-services.json"),
+                // Path 3: Try reading from assets
+                null // Will try assets separately
+            )
+            
+            var json: String? = null
+            var file: java.io.File? = null
+            
+            // Try file paths first
+            for (path in possiblePaths.filterNotNull()) {
+                if (path.exists()) {
+                    file = path
+                    json = path.readText()
+                    android.util.Log.d("Settings", "Found google-services.json at: ${path.absolutePath}")
+                    break
+                }
+            }
+            
+            // Try assets as fallback
+            if (json == null) {
+                try {
+                    val inputStream = context.assets.open("google-services.json")
+                    json = inputStream.bufferedReader().use { it.readText() }
+                    android.util.Log.d("Settings", "Found google-services.json in assets")
+                } catch (e: Exception) {
+                    android.util.Log.w("Settings", "google-services.json not found in assets", e)
+                }
+            }
+            
+            if (json == null) {
+                android.util.Log.e("Settings", "Could not find google-services.json in any location")
+                return null
+            }
+            
+            val jsonObject = JSONObject(json)
+            val clients = jsonObject.getJSONArray("client")
+            
+            for (i in 0 until clients.length()) {
+                val client = clients.getJSONObject(i)
+                val oauthClients = client.optJSONArray("oauth_client")
+                if (oauthClients != null && oauthClients.length() > 0) {
+                    for (j in 0 until oauthClients.length()) {
+                        val oauthClient = oauthClients.getJSONObject(j)
+                        val clientType = oauthClient.optInt("client_type", -1)
+                        // client_type 3 is Web client
+                        if (clientType == 3) {
+                            val clientId = oauthClient.getString("client_id")
+                            android.util.Log.d("Settings", "Found web client ID: $clientId")
+                            return clientId
+                        }
+                    }
+                }
+            }
+            android.util.Log.w("Settings", "Web client ID (client_type 3) not found in google-services.json")
+            null
+        } catch (e: Exception) {
+            android.util.Log.e("Settings", "Error reading google-services.json", e)
+            e.printStackTrace()
+            null
+        }
+    }
+    
+    val googleSignInLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        isSigningIn = true
+        signInError = null
+        coroutineScope.launch {
+            try {
+                val account = task.getResult(ApiException::class.java)
+                val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+                auth.signInWithCredential(credential).await()
+                isSigningIn = false
+            } catch (e: ApiException) {
+                isSigningIn = false
+                signInError = when (e.statusCode) {
+                    12501 -> "Sign-in was cancelled"
+                    10 -> "Google Sign-In is not available. Please try again later."
+                    else -> "Sign-in failed: ${e.message}"
+                }
+                android.util.Log.e("Settings", "Google sign in failed", e)
+            } catch (e: Exception) {
+                isSigningIn = false
+                signInError = "Sign-in failed: ${e.message}"
+                android.util.Log.e("Settings", "Sign in failed", e)
+            }
+        }
+    }
+    
+    fun signInWithGoogle() {
+        // Get web client ID from string resources or fallback to reading google-services.json
+        val webClientId = try {
+            val resId = context.resources.getIdentifier("web_client_id", "string", context.packageName)
+            if (resId != 0) {
+                val id = context.getString(resId)
+                if (id.isNotBlank() && id != "YOUR_WEB_CLIENT_ID_HERE") {
+                    id
+                } else {
+                    getWebClientIdFromGoogleServices(context)
+                }
+            } else {
+                getWebClientIdFromGoogleServices(context)
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("Settings", "Error getting web_client_id", e)
+            getWebClientIdFromGoogleServices(context)
+        }
+        
+        if (webClientId.isNullOrBlank()) {
+            signInError = "Google Sign-In is not available. Please try again later."
+            return
+        }
+        
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(webClientId)
+            .requestEmail()
+            .build()
+        val googleSignInClient = GoogleSignIn.getClient(context, gso)
+        googleSignInLauncher.launch(googleSignInClient.signInIntent)
+    }
+    
+    fun signOut() {
+        auth.signOut()
+        GoogleSignIn.getClient(context, GoogleSignInOptions.DEFAULT_SIGN_IN).signOut()
+    }
     val scroll = rememberScrollState()
     
     Column(
@@ -3445,6 +4152,95 @@ private fun SettingsScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
+        // Account Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Account",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                
+                if (currentUser != null) {
+                    // Signed in
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    currentUser?.displayName ?: "Signed in",
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                                Text(
+                                    currentUser?.email ?: "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.alpha(0.7f)
+                                )
+                            }
+                            IconButton(
+                                onClick = { signOut() },
+                                enabled = !isSigningIn
+                            ) {
+                                Icon(
+                                    Icons.Filled.Logout,
+                                    contentDescription = "Sign out"
+                                )
+                            }
+                        }
+                        Text(
+                            "Your data is synced with your Google account",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.alpha(0.7f)
+                        )
+                    }
+                } else {
+                    // Not signed in
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "Sign in with Google to sync your data across devices",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.alpha(0.7f)
+                        )
+                        if (signInError != null) {
+                            Text(
+                                signInError!!,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                        Button(
+                            onClick = { signInWithGoogle() },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isSigningIn
+                        ) {
+                            if (isSigningIn) {
+                                Text("Signing in...")
+                            } else {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(
+                                        Icons.Filled.AccountCircle,
+                                        contentDescription = null,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Text("Sign in with Google")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         // Profile Section
         Card(
             modifier = Modifier.fillMaxWidth()
@@ -3497,6 +4293,57 @@ private fun SettingsScreen(
         }
         
         // Data Management Section
+        var isUploadingBackup by remember { mutableStateOf(false) }
+        val authForEmail = FirebaseAuth.getInstance()
+        
+        // Export launcher
+        val exportLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.CreateDocument("text/plain")
+        ) { uri ->
+            if (uri != null) {
+                val email = authForEmail.currentUser?.email
+                val dataString = exportAllDataToString(days, profile, schedule, goals, email)
+                runCatching {
+                    context.contentResolver.openOutputStream(uri)?.use { out ->
+                        out.write(dataString.toByteArray(Charsets.UTF_8))
+                    }
+                }
+            }
+        }
+        
+        // Import launcher
+        val importLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            if (uri != null) {
+                runCatching {
+                    val dataString = context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                    
+                    if (!dataString.isNullOrBlank()) {
+                        val result = importAllDataFromString(dataString)
+                        if (result.success) {
+                            result.days?.let {
+                                days.clear()
+                                days.addAll(it)
+                                saveDays(context, it)
+                            }
+                            result.profile?.let {
+                                onProfileChanged(it)
+                            }
+                            result.schedule?.let {
+                                onScheduleChanged(it)
+                            }
+                            result.goals?.let {
+                                onGoalsChanged(it)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         Card(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -3509,7 +4356,7 @@ private fun SettingsScreen(
                     style = MaterialTheme.typography.titleMedium
                 )
                 Text(
-                    "Export or import your workout data",
+                    "Export or import your workout data as a text file",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.alpha(0.7f)
                 )
@@ -3518,16 +4365,136 @@ private fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Button(
-                        onClick = onExport,
+                        onClick = {
+                            exportLauncher.launch("gymnotes_backup.txt")
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Export Data")
                     }
                     Button(
-                        onClick = onImport,
+                        onClick = {
+                            importLauncher.launch(arrayOf("text/plain", "text/*"))
+                        },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Import Data")
+                    }
+                }
+                
+                // Cloud backup button
+                if (currentUser != null && currentUser?.email != null) {
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                    Text(
+                        "Cloud Backup",
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        "Your data is automatically backed up monthly. You can also manually upload now.",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.alpha(0.7f)
+                    )
+                    var backupError by remember { mutableStateOf<String?>(null) }
+                    var backupSuccess by remember { mutableStateOf(false) }
+                    
+                    if (backupError != null) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                backupError!!,
+                                color = MaterialTheme.colorScheme.error,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Text(
+                                "Tip: You can use 'Export Data' above to save a backup file instead.",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.alpha(0.7f)
+                            )
+                        }
+                    }
+                    if (backupSuccess) {
+                        Text(
+                            "Backup uploaded successfully!",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
+                    
+                    Button(
+                        onClick = {
+                            isUploadingBackup = true
+                            backupError = null
+                            backupSuccess = false
+                            coroutineScope.launch {
+                                try {
+                                    val email = currentUser?.email
+                                    if (email.isNullOrBlank()) {
+                                        isUploadingBackup = false
+                                        backupError = "Please sign in with Google to use cloud backup"
+                                        return@launch
+                                    }
+                                    
+                                    // Verify user is still authenticated
+                                    val authCheck = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
+                                    if (authCheck == null || authCheck.email != email) {
+                                        isUploadingBackup = false
+                                        backupError = "Authentication expired. Please sign in again."
+                                        return@launch
+                                    }
+                                    
+                                    val dataString = exportAllDataToString(days, profile, schedule, goals, email)
+                                    
+                                    // Add timeout to prevent infinite hanging
+                                    val result = kotlinx.coroutines.withTimeoutOrNull(30000) { // 30 second timeout
+                                        uploadToCloudBackup(context, email, dataString)
+                                    }
+                                    
+                                    if (result == null) {
+                                        isUploadingBackup = false
+                                        backupError = "Upload timed out. Please check your internet connection and try again."
+                                        return@launch
+                                    }
+                                    
+                                    result.fold(
+                                        onSuccess = { 
+                                            isUploadingBackup = false
+                                            backupSuccess = true
+                                            backupError = null
+                                            android.util.Log.d("Settings", "Backup uploaded successfully")
+                                        },
+                                        onFailure = { e ->
+                                            isUploadingBackup = false
+                                            val errorMsg = when {
+                                                e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true -> 
+                                                    "Unable to upload backup. Please try again later."
+                                                e.message?.contains("UNAVAILABLE", ignoreCase = true) == true -> 
+                                                    "Backup service is temporarily unavailable. Please try again later."
+                                                e.message?.contains("network", ignoreCase = true) == true -> 
+                                                    "Network error. Please check your internet connection and try again."
+                                                e.message?.contains("timeout", ignoreCase = true) == true -> 
+                                                    "Upload timed out. Please check your internet connection and try again."
+                                                e.message?.contains("Authentication", ignoreCase = true) == true -> 
+                                                    "Please sign in with Google to use cloud backup."
+                                                else -> "Upload failed. Please try again later."
+                                            }
+                                            backupError = errorMsg
+                                            android.util.Log.e("Settings", "Backup failed", e)
+                                        }
+                                    )
+                                } catch (e: Exception) {
+                                    isUploadingBackup = false
+                                    backupError = "Error: ${e.message ?: "Unknown error occurred"}"
+                                    android.util.Log.e("Settings", "Backup exception", e)
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !isUploadingBackup
+                    ) {
+                        if (isUploadingBackup) {
+                            Text("Uploading...")
+                        } else {
+                            Text("Upload to Cloud Now")
+                        }
                     }
                 }
             }

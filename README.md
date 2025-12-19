@@ -195,7 +195,11 @@ Switch between metric and imperial units in Settings → Units. All data is stor
 - [x] Add comprehensive analysis with persistence
 - [x] Improve data persistence and error handling
 - [ ] Move Gemini API key to secure backend proxy (security improvement)
+  - [ ] Implement Firebase Functions backend
+  - [ ] Add rate limiting: 10 free prompts per day per device
+  - [ ] Migrate all Gemini API calls to use backend proxy
 - [ ] Add image extraction from Gemini API responses when image generation is implemented
+- [ ] **Empty State Suggestions**: When there is no schedule, no muscle groups, or no cards in a muscle group, show an option to create suggested cards, groups, and schedule (onboarding/UX improvement)
 
 ## Contributing
 

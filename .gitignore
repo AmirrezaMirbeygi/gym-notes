@@ -13,3 +13,18 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Firebase and API keys
+google-services.json
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*.log
+
+# Environment variables and secrets
+.env
+.env.local
+*.key
+*secret*
+*api-key*

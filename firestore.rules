@@ -1,0 +1,25 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rate limits collection - only allow writes from server
+    match /rateLimits/{document} {
+      // Only allow reads/writes from Firebase Functions (server-side)
+      // Client can read their own rate limit status
+      allow read: if request.auth != null || resource.data.deviceId == request.resource.data.deviceId;
+      allow write: if false; // Only server can write
+    }
+    
+    // User backups collection - users can read/write their own backups
+    match /user_backups/{email} {
+      // Users can only access backups for their own email
+      allow read, write: if request.auth != null && request.auth.token.email == email;
+      
+      // Allow access to months subcollection
+      match /months/{month} {
+        allow read, write: if request.auth != null && request.auth.token.email == email;
+      }
+    }
+  }
+}
+
+

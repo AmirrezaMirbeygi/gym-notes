@@ -4,6 +4,9 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+import java.util.Properties
+import java.io.FileInputStream
+
 android {
     namespace = "com.goofyapps.gymnotes"
     compileSdk = 35
@@ -12,10 +15,20 @@ android {
         applicationId = "com.goofyapps.gymnotes"
         minSdk = 24
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 6
+        versionName = "1.2.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        
+        // Load Gemini API key from local.properties or use placeholder
+        val localProperties = Properties()
+        val localPropertiesFile = rootProject.file("local.properties")
+        if (localPropertiesFile.exists()) {
+            localProperties.load(FileInputStream(localPropertiesFile))
+        }
+        val geminiApiKey = localProperties.getProperty("GEMINI_API_KEY") ?: "YOUR_GEMINI_API_KEY_HERE"
+        
+        buildConfigField("String", "GEMINI_API_KEY", "\"$geminiApiKey\"")
     }
 
     buildTypes {
@@ -36,6 +49,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 
@@ -60,7 +74,7 @@ dependencies {
     implementation("org.burnoutcrew.composereorderable:reorderable:0.9.6")
     implementation("io.github.sceneview:sceneview:2.1.0")
     
-    // Gemini AI
+    // Gemini AI - Using stable version
     implementation("com.google.ai.client.generativeai:generativeai:0.2.2")
     
     // Image loading

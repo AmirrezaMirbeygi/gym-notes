@@ -19,15 +19,16 @@ import java.io.FileOutputStream
  */
 class GeminiAIService(private val context: Context) {
     
-    // TODO: Replace with your actual Gemini API key
-    // You can get one from: https://makersuite.google.com/app/apikey
-    private val apiKey = "YOUR_GEMINI_API_KEY_HERE"
+    // API key is loaded from BuildConfig (set in local.properties)
+    // Get your API key from: https://aistudio.google.com/app/apikey
+    private val apiKey = BuildConfig.GEMINI_API_KEY
     
     // Gemini 2.5 Flash Image model name for image generation
     private val imageModelName = "gemini-2.5-flash-image-exp"
     
     // Regular Gemini model for text analysis
-    private val textModelName = "gemini-2.0-flash-exp"
+    // Using gemini-3-flash for latest model support
+    private val textModelName = "gemini-2.5-flash"
     
     /**
      * Analyze body photos and generate muscle mass visualization image.
@@ -94,6 +95,51 @@ class GeminiAIService(private val context: Context) {
             )
         } catch (e: Exception) {
             Log.e("GeminiAI", "Error analyzing photos and generating image", e)
+            Result.failure(e)
+        }
+    }
+    
+    /**
+     * Send a custom prompt to the AI and get a response.
+     * Can include context about the user's fitness data if needed.
+     */
+    suspend fun sendCustomPrompt(
+        prompt: String,
+        days: List<WorkoutDay>? = null,
+        currentScores: Map<String, Int>? = null,
+        bodyFatPercent: Float? = null
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val model = GenerativeModel(
+                modelName = textModelName,
+                apiKey = apiKey
+            )
+            
+            // Build enhanced prompt with context if available
+            val enhancedPrompt = buildString {
+                append(prompt)
+                
+                if (days != null && currentScores != null && bodyFatPercent != null) {
+                    append("\n\n--- Context ---\n")
+                    append("Current muscle group scores (0-100):\n")
+                    append("- Chest: ${currentScores["chest"] ?: 0}/100\n")
+                    append("- Back: ${currentScores["back"] ?: 0}/100\n")
+                    append("- Core: ${currentScores["core"] ?: 0}/100\n")
+                    append("- Shoulders: ${currentScores["shoulders"] ?: 0}/100\n")
+                    append("- Arms: ${currentScores["arms"] ?: 0}/100\n")
+                    append("- Legs: ${currentScores["legs"] ?: 0}/100\n")
+                    append("- Body Fat: ${bodyFatPercent}%\n")
+                    append("- Total workout days: ${days.size}\n")
+                    append("- Total exercises: ${days.sumOf { it.exercises.size }}\n")
+                }
+            }
+            
+            val response = model.generateContent(enhancedPrompt)
+            val result = response.text ?: "No response generated."
+            
+            Result.success(result)
+        } catch (e: Exception) {
+            Log.e("GeminiAI", "Error sending custom prompt", e)
             Result.failure(e)
         }
     }
@@ -191,6 +237,44 @@ class GeminiAIService(private val context: Context) {
         return outputStream.toByteArray()
     }
     
+    /**
+     * Comprehensive analysis including photos, scores, and goals.
+     * Provides full analysis and specific recommendations to reach goals.
+     */
+    suspend fun comprehensiveAnalysis(
+        frontPhotoUri: Uri?,
+        backPhotoUri: Uri?,
+        currentScores: Map<String, Int>,
+        bodyFatPercent: Float,
+        goals: Map<String, Int>?, // goal scores
+        goalBodyFat: Float?,
+        days: List<WorkoutDay>
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val model = GenerativeModel(
+                modelName = textModelName,
+                apiKey = apiKey
+            )
+            
+            val prompt = buildComprehensiveAnalysisPrompt(
+                currentScores = currentScores,
+                bodyFatPercent = bodyFatPercent,
+                goals = goals,
+                goalBodyFat = goalBodyFat,
+                days = days,
+                hasPhotos = frontPhotoUri != null && backPhotoUri != null
+            )
+            
+            val response = model.generateContent(prompt)
+            val result = response.text ?: "Analysis completed."
+            
+            Result.success(result)
+        } catch (e: Exception) {
+            Log.e("GeminiAI", "Error in comprehensive analysis", e)
+            Result.failure(e)
+        }
+    }
+    
     private fun buildAnalysisPrompt(
         scores: Map<String, Int>,
         bodyFat: Float
@@ -210,6 +294,72 @@ class GeminiAIService(private val context: Context) {
             - Legs: ${scores["legs"] ?: 0}/100
             - Body Fat: ${bodyFat}%
         """.trimIndent()
+    }
+    
+    private fun buildComprehensiveAnalysisPrompt(
+        currentScores: Map<String, Int>,
+        bodyFatPercent: Float,
+        goals: Map<String, Int>?,
+        goalBodyFat: Float?,
+        days: List<WorkoutDay>,
+        hasPhotos: Boolean
+    ): String {
+        val workoutSummary = buildWorkoutSummary(days)
+        
+        return buildString {
+            append("""Provide a comprehensive fitness analysis and action plan.
+            
+            CURRENT STATUS:
+            Muscle Group Scores (0-100):
+            - Chest: ${currentScores["chest"] ?: 0}/100
+            - Back: ${currentScores["back"] ?: 0}/100
+            - Core: ${currentScores["core"] ?: 0}/100
+            - Shoulders: ${currentScores["shoulders"] ?: 0}/100
+            - Arms: ${currentScores["arms"] ?: 0}/100
+            - Legs: ${currentScores["legs"] ?: 0}/100
+            - Body Fat: ${bodyFatPercent}%
+            
+            """)
+            
+            if (goals != null || goalBodyFat != null) {
+                append("GOALS:\n")
+                if (goals != null) {
+                    append("Target Muscle Group Scores:\n")
+                    append("- Chest: ${goals["chest"] ?: currentScores["chest"] ?: 0}/100\n")
+                    append("- Back: ${goals["back"] ?: currentScores["back"] ?: 0}/100\n")
+                    append("- Core: ${goals["core"] ?: currentScores["core"] ?: 0}/100\n")
+                    append("- Shoulders: ${goals["shoulders"] ?: currentScores["shoulders"] ?: 0}/100\n")
+                    append("- Arms: ${goals["arms"] ?: currentScores["arms"] ?: 0}/100\n")
+                    append("- Legs: ${goals["legs"] ?: currentScores["legs"] ?: 0}/100\n")
+                }
+                if (goalBodyFat != null) {
+                    append("- Target Body Fat: ${goalBodyFat}%\n")
+                }
+                append("\n")
+            }
+            
+            append("""WORKOUT DATA:
+            - Total workout days: ${workoutSummary.totalDays}
+            - Total exercises: ${workoutSummary.exerciseCount}
+            
+            """)
+            
+            if (hasPhotos) {
+                append("Body photos (front and back) have been uploaded for visual analysis.\n\n")
+            }
+            
+            append("""Please provide:
+            1. FULL ANALYSIS: Comprehensive assessment of current fitness level, muscle development, and body composition
+            2. GAP ANALYSIS: Specific gaps between current status and goals (if goals are set)
+            3. ACTION PLAN: Exactly what to do and how much to do to reach your goals:
+               - Specific exercises to add/increase
+               - Sets, reps, and weight recommendations
+               - Frequency and volume targets
+               - Timeline estimates
+            4. PRIORITIZATION: Which muscle groups to focus on first based on gaps and current development
+            
+            Be specific, actionable, and quantitative in your recommendations.""")
+        }
     }
     
     private fun buildImageGenerationPrompt(

@@ -117,6 +117,7 @@ class GeminiAIService(private val context: Context) {
             
             // Build enhanced prompt with context if available
             val enhancedPrompt = buildString {
+                append("You are Gymini, an AI fitness coach. Always refer to yourself as \"Gymini\" in your responses. You can use pronouns when referring to yourself.\n\n")
                 append(prompt)
                 
                 if (days != null && currentScores != null && bodyFatPercent != null) {
@@ -307,7 +308,9 @@ class GeminiAIService(private val context: Context) {
         val workoutSummary = buildWorkoutSummary(days)
         
         return buildString {
-            append("""Provide a comprehensive fitness analysis and action plan.
+            append("""You are Gymini, an AI fitness coach. Always refer to yourself as "Gymini" in your responses. You can use pronouns when referring to yourself.
+            
+            Provide a comprehensive fitness analysis and action plan.
             
             CURRENT STATUS:
             Muscle Group Scores (0-100):

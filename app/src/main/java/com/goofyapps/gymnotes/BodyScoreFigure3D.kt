@@ -152,7 +152,7 @@ fun BodyScoreFigure3D(
                         if (abs(fatWeight - lastFat01) < 0.002f && muscleTargets.isEmpty()) return@Scene
                         lastFat01 = fatWeight
 
-                        applyBodyMorphs(cache, fatWeight, muscleTargets)
+                        applyBodyMorphs(cache, fatWeight, muscleTargets, bodyFatPercent)
                     }
                 )
             }
@@ -223,15 +223,35 @@ private fun logMorphInfoOnce(cache: MorphCache) {
 }
 
 /**
- * Map 5–50% body fat into a morph weight.
- * Moderate exaggeration to make changes more visible.
+ * Map body fat percentage to morph weight with custom curve:
+ * 10% -> 0.0, 20% -> 0.15, 30% -> 0.3, 40% -> 0.6, 50% -> 1.0
  */
 private fun mapBodyFatToMorphWeight(bodyFatPercent: Float): Float {
-    val clamped = bodyFatPercent.coerceIn(5f, 50f)
-    val n = clamp01((clamped - 5f) / 45f)          // 0..1 (5% -> 0, 50% -> 1)
-    val curved = n * n                              // moderate curve (less aggressive than n*n*n)
-    val scale = 3.0f                                // 3x scale (less than previous 10x)
-    return curved * scale
+    val clamped = bodyFatPercent.coerceIn(10f, 50f)
+    
+    return when {
+        clamped <= 10f -> 0.0f
+        clamped <= 20f -> {
+            // Linear interpolation: 10% -> 0.0, 20% -> 0.15
+            val t = (clamped - 10f) / 10f // 0..1
+            0.0f + t * 0.15f
+        }
+        clamped <= 30f -> {
+            // Linear interpolation: 20% -> 0.15, 30% -> 0.3
+            val t = (clamped - 20f) / 10f // 0..1
+            0.15f + t * (0.3f - 0.15f)
+        }
+        clamped <= 40f -> {
+            // Linear interpolation: 30% -> 0.3, 40% -> 0.6
+            val t = (clamped - 30f) / 10f // 0..1
+            0.3f + t * (0.6f - 0.3f)
+        }
+        else -> {
+            // Linear interpolation: 40% -> 0.6, 50% -> 1.0
+            val t = (clamped - 40f) / 10f // 0..1
+            0.6f + t * (1.0f - 0.6f)
+        }
+    }
 }
 
 /**
@@ -270,33 +290,31 @@ private fun computeMuscleMorphTargets(scores: Map<String, Int>): Map<String, Flo
 }
 
 /**
- * Calculate muscle reduction factor based on body fat.
- * When fat weight > 0.5, muscles start reducing.
- * At max fat, muscles are reduced to 25% of their original value.
+ * Calculate muscle reduction factor based on body fat percentage.
+ * When body fat > 23%, muscles start reducing.
+ * At max fat (50%), muscles are reduced to 25% of their original value.
  */
-private fun calculateMuscleReductionFactor(fatWeight: Float): Float {
-    if (fatWeight <= 0.5f) {
-        return 1.0f // No reduction when fat <= 0.5
+private fun calculateMuscleReductionFactor(bodyFatPercent: Float): Float {
+    if (bodyFatPercent <= 23f) {
+        return 1.0f // No reduction when body fat <= 23%
     }
-    // Linear interpolation from 1.0 at fat=0.5 to 0.25 at fat=max
-    // Assuming max fat weight is around 3.0 (with 3x scale), but we'll use the actual fat weight
-    // Factor = 1.0 - (fat - 0.5) / (maxFat - 0.5) * 0.75
-    // For simplicity, we'll assume max fat is 3.0, so:
-    // Factor = 1.0 - (fat - 0.5) / 2.5 * 0.75
-    val maxFat = 3.0f // Max fat weight with 3x scale
-    val reductionRange = maxFat - 0.5f // 2.5
-    val reductionAmount = (fatWeight - 0.5f) / reductionRange * 0.75f // 0 to 0.75
+    // Linear interpolation from 1.0 at 23% to 0.25 at 50%
+    // Factor = 1.0 - (bodyFat - 23) / (50 - 23) * 0.75
+    // Factor = 1.0 - (bodyFat - 23) / 27 * 0.75
+    val reductionRange = 50f - 23f // 27
+    val reductionAmount = (bodyFatPercent - 23f) / reductionRange * 0.75f // 0 to 0.75
     return 1.0f - reductionAmount // 1.0 to 0.25
 }
 
 private fun applyBodyMorphs(
     cache: MorphCache,
     fat01: Float,
-    muscleTargets: Map<String, Float>
+    muscleTargets: Map<String, Float>,
+    bodyFatPercent: Float
 ) {
     try {
-        // Calculate muscle reduction factor based on fat weight
-        val muscleReductionFactor = calculateMuscleReductionFactor(fat01)
+        // Calculate muscle reduction factor based on body fat percentage
+        val muscleReductionFactor = calculateMuscleReductionFactor(bodyFatPercent)
         
         for (info in cache.renderables) {
             if (info.targetCount <= 0) continue

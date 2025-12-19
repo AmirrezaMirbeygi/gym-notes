@@ -23,6 +23,7 @@ A comprehensive Android fitness tracking app built with Kotlin and Jetpack Compo
 - **Muscle Mass Visualization**: AI-generated visualizations based on your photos and fitness metrics
 - **Workout Suggestions**: Personalized recommendations based on your exercise data
 - **Progress Analysis**: Get insights on which muscle groups need more work
+- **Custom Prompts**: Ask any fitness-related question and get personalized AI responses with your workout context
 - **Toggle Visualization**: Switch between 3D model and AI-generated images
 
 ### ⚙️ Customization
@@ -51,9 +52,11 @@ cd GymNotes
 3. Sync Gradle dependencies
 
 4. **Configure Gemini API Key** (Required for AI features):
-   - Get your API key from [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - Open `app/src/main/java/com/goofyapps/gymnotes/GeminiAIService.kt`
-   - Replace `"YOUR_GEMINI_API_KEY_HERE"` on line 24 with your actual API key
+   - Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
+   - Open `local.properties` in the project root
+   - Add this line: `GEMINI_API_KEY=your_actual_api_key_here`
+   - Replace `your_actual_api_key_here` with your actual Gemini API key
+   - **Note**: `local.properties` is already in `.gitignore`, so your API key won't be committed to version control
 
 5. Build and run the app
 
@@ -121,7 +124,8 @@ The app automatically calculates scores for each muscle group based on:
 1. **Upload Photos**: Upload front and back full-body photos (one-time setup)
 2. **Analyze**: Click "Analyze with AI" to get insights and generate visualizations
 3. **View Results**: See AI-generated muscle mass visualizations and suggestions
-4. **Toggle View**: In Progress tab, toggle between 3D model and AI-generated image
+4. **Ask Questions**: Use the "Ask Gymini" section to ask any fitness-related question. Your current workout data, muscle scores, and body fat percentage are automatically included as context for personalized responses
+5. **Toggle View**: In Progress tab, toggle between 3D model and AI-generated image
 
 ## Configuration
 
@@ -147,7 +151,7 @@ Switch between metric and imperial units in Settings → Units. All data is stor
 ## Known Issues / TODOs
 
 - [ ] Implement Gemini 2.5 Flash Image generation (API structure verification needed)
-- [ ] Add prompt function to Gymini tab
+- [x] Add prompt function to Gymini tab
 - [ ] Improve image extraction from Gemini API responses
 
 ## Contributing

@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.ActivityResultLauncher
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
@@ -43,6 +44,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -60,6 +62,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -90,6 +94,7 @@ import org.burnoutcrew.reorderable.reorderable
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CoroutineScope
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlin.math.ln
 import kotlin.math.max
@@ -148,6 +153,7 @@ sealed class Screen {
     // NEW
     data object GoalMode : Screen()
     data object Gymini : Screen()
+    data object Settings : Screen()
 }
 
 // -------------------- ACTIVITY --------------------
@@ -477,9 +483,61 @@ private fun AppRoot() {
     var showUnits by remember { mutableStateOf(false) }
     var showClearConfirm by remember { mutableStateOf(false) }
 
-    fun topBar(title: String, showBack: Boolean, onBack: (() -> Unit)? = null): @Composable () -> Unit = {
+    @Composable
+    fun SettingsDropdown(
+        expanded: Boolean,
+        onDismiss: () -> Unit,
+        onShowProfile: () -> Unit,
+        onShowUnits: () -> Unit,
+        exportLauncher: ActivityResultLauncher<String>,
+        importLauncher: ActivityResultLauncher<Array<String>>,
+        onShowClearConfirm: () -> Unit
+    ) {
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = onDismiss
+        ) {
+            DropdownMenuItem(
+                text = { Text("Profile") },
+                onClick = {
+                    onDismiss()
+                    onShowProfile()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Units (kg / lb)") },
+                onClick = {
+                    onDismiss()
+                    onShowUnits()
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Export data") },
+                onClick = {
+                    onDismiss()
+                    exportLauncher.launch("gym_notes_backup.json")
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Import data") },
+                onClick = {
+                    onDismiss()
+                    importLauncher.launch(arrayOf("application/json", "text/*"))
+                }
+            )
+            DropdownMenuItem(
+                text = { Text("Clear all data") },
+                onClick = {
+                    onDismiss()
+                    onShowClearConfirm()
+                }
+            )
+        }
+    }
+
+    fun topBar(title: String? = null, showBack: Boolean = false, onBack: (() -> Unit)? = null): @Composable () -> Unit = {
         TopAppBar(
-            title = { Text(title) },
+            title = { if (title != null) Text(title) else Spacer(Modifier) },
             navigationIcon = {
                 if (showBack && onBack != null) {
                     IconButton(onClick = onBack) {
@@ -488,50 +546,8 @@ private fun AppRoot() {
                 }
             },
             actions = {
-                Box {
-                    IconButton(onClick = { gearOpen = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                    DropdownMenu(
-                        expanded = gearOpen,
-                        onDismissRequest = { gearOpen = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Profile") },
-                            onClick = {
-                                gearOpen = false
-                                showProfile = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Units (kg / lb)") },
-                            onClick = {
-                                gearOpen = false
-                                showUnits = true
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Export data") },
-                            onClick = {
-                                gearOpen = false
-                                exportLauncher.launch("gym_notes_backup.json")
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Import data") },
-                            onClick = {
-                                gearOpen = false
-                                importLauncher.launch(arrayOf("application/json", "text/*"))
-                            }
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Clear all data") },
-                            onClick = {
-                                gearOpen = false
-                                showClearConfirm = true
-                            }
-                        )
-                    }
+                IconButton(onClick = { screen = Screen.Settings }) {
+                    Icon(Icons.Filled.Settings, contentDescription = "Settings")
                 }
             }
         )
@@ -557,14 +573,21 @@ private fun AppRoot() {
                 icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = "Gymini") },
                 label = { Text("Gymini") }
             )
+            NavigationBarItem(
+                selected = screen is Screen.Settings,
+                onClick = { screen = Screen.Settings },
+                icon = { Icon(Icons.Filled.Settings, contentDescription = "Settings") },
+                label = { Text("Settings") }
+            )
         }
     }
 
     Scaffold(
         topBar = {
             when (val s = screen) {
-                is Screen.Workout -> topBar("Workout", showBack = false).invoke()
-                is Screen.Progress -> topBar("Progress", showBack = false).invoke()
+                is Screen.Workout -> { /* No top bar for main pages */ }
+                is Screen.Progress -> { /* No top bar for main pages */ }
+                is Screen.Gymini -> { /* No top bar for main pages */ }
                 is Screen.GoalMode -> topBar("Goal Mode", showBack = true) { screen = Screen.Progress }.invoke()
                 is Screen.ProgressGroupDetail -> {
                     val name = MuscleGroup.entries.firstOrNull { it.id == s.groupId }?.displayName ?: "Group"
@@ -576,7 +599,7 @@ private fun AppRoot() {
                 is Screen.ExerciseDetail -> topBar("Edit Exercise", showBack = true) {
                     screen = Screen.DayDetail(s.dayIndex)
                 }.invoke()
-                is Screen.Gymini -> topBar("Gymini", showBack = false).invoke()
+                is Screen.Settings -> { /* No top bar for Settings - it's a main tab */ }
             }
         },
         bottomBar = bottomBar
@@ -602,6 +625,7 @@ private fun AppRoot() {
                 is Screen.Gymini -> AIScreen(
                     days = days,
                     profile = profile,
+                    goals = goals,
                     onBack = { screen = Screen.Progress }
                 )
 
@@ -613,6 +637,16 @@ private fun AppRoot() {
                         goals = g
                         saveGoals(context, g)
                     }
+                )
+
+                is Screen.Settings -> SettingsScreen(
+                    profile = profile,
+                    unitSystem = unitSystem,
+                    onProfileClick = { showProfile = true },
+                    onUnitsClick = { showUnits = true },
+                    onExport = { exportLauncher.launch("gym_notes_backup.json") },
+                    onImport = { importLauncher.launch(arrayOf("application/json", "text/*")) },
+                    onClearData = { showClearConfirm = true }
                 )
 
                 is Screen.ProgressGroupDetail -> ProgressGroupDetailScreen(
@@ -2097,10 +2131,12 @@ private fun loadAIGeneratedImageUri(context: Context): Uri? {
 private fun AIScreen(
     days: List<WorkoutDay>,
     profile: Profile,
+    goals: Goals?,
     onBack: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val aiService = remember { GeminiAIService(context) }
+    val coroutineScope = rememberCoroutineScope()
     
     var frontPhotoUri by remember { mutableStateOf<Uri?>(loadAIPhotoUri(context, isFront = true)) }
     var backPhotoUri by remember { mutableStateOf<Uri?>(loadAIPhotoUri(context, isFront = false)) }
@@ -2169,6 +2205,87 @@ private fun AIScreen(
     
     val scroll = rememberScrollState()
     
+    var comprehensiveAnalysisResult by remember { mutableStateOf<String?>(null) }
+    var isAnalyzing by remember { mutableStateOf(false) }
+    
+    // Auto-run comprehensive analysis when photos are available
+    LaunchedEffect(frontPhotoUri, backPhotoUri, groupScores, goals) {
+        if (frontPhotoUri != null && backPhotoUri != null && !isAnalyzing && comprehensiveAnalysisResult == null) {
+            isAnalyzing = true
+            aiService.comprehensiveAnalysis(
+                frontPhotoUri = frontPhotoUri,
+                backPhotoUri = backPhotoUri,
+                currentScores = groupScores,
+                bodyFatPercent = bf,
+                goals = goals?.groupScores,
+                goalBodyFat = goals?.bodyFatPercent,
+                days = days
+            ).fold(
+                onSuccess = { result ->
+                    comprehensiveAnalysisResult = result
+                    isAnalyzing = false
+                },
+                onFailure = { e ->
+                    aiError = "Analysis failed: ${e.message}"
+                    isAnalyzing = false
+                }
+            )
+        }
+    }
+    
+    var selectedTab by remember { mutableStateOf(0) }
+    
+    Column(Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Analysis") }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("Chat") }
+            )
+        }
+        
+        when (selectedTab) {
+            0 -> AnalysisTab(
+                frontPhotoUri = frontPhotoUri,
+                backPhotoUri = backPhotoUri,
+                frontPhotoLauncher = frontPhotoLauncher,
+                backPhotoLauncher = backPhotoLauncher,
+                aiGeneratedImageUri = aiGeneratedImageUri,
+                comprehensiveAnalysisResult = comprehensiveAnalysisResult,
+                isAnalyzing = isAnalyzing,
+                aiError = aiError,
+                context = context
+            )
+            1 -> ChatTab(
+                days = days,
+                groupScores = groupScores,
+                bf = bf,
+                aiService = aiService,
+                coroutineScope = coroutineScope
+            )
+        }
+    }
+}
+
+@Composable
+private fun AnalysisTab(
+    frontPhotoUri: Uri?,
+    backPhotoUri: Uri?,
+    frontPhotoLauncher: ActivityResultLauncher<String>,
+    backPhotoLauncher: ActivityResultLauncher<String>,
+    aiGeneratedImageUri: Uri?,
+    comprehensiveAnalysisResult: String?,
+    isAnalyzing: Boolean,
+    aiError: String?,
+    context: Context
+) {
+    val scroll = rememberScrollState()
+    
     Column(
         Modifier
             .fillMaxSize()
@@ -2176,11 +2293,6 @@ private fun AIScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text(
-            "AI Analysis & Suggestions",
-            style = MaterialTheme.typography.titleLarge
-        )
-        
         // Photo Upload Section
         Card(
             modifier = Modifier.fillMaxWidth()
@@ -2333,68 +2445,72 @@ private fun AIScreen(
             }
         }
         
-        // Analyze Button
-        val coroutineScope = rememberCoroutineScope()
-        if (frontPhotoUri != null && backPhotoUri != null) {
-            Button(
-                onClick = {
-                    isLoading = true
-                    aiError = null
-                    aiSuggestions = null
-                    
-                    // Analyze photos and get initial suggestions
-                    coroutineScope.launch {
-                        aiService.analyzeBodyPhotosAndGenerateMuscleMass(
-                            frontPhotoUri = frontPhotoUri!!,
-                            backPhotoUri = backPhotoUri!!,
-                            currentScores = groupScores,
-                            bodyFatPercent = bf
-                        ).fold(
-                            onSuccess = { result ->
-                                aiSuggestions = result.analysisText
-                                aiGeneratedImageUri = result.generatedImageUri
-                                // Save generated image URI
-                                result.generatedImageUri?.let { uri ->
-                                    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                                        .edit()
-                                        .putString(KEY_AI_GENERATED_IMAGE, uri.toString())
-                                        .apply()
-                                }
-                                isLoading = false
-                            },
-                            onFailure = { e ->
-                                aiError = "Analysis failed: ${e.message}"
-                                isLoading = false
-                            }
-                        )
-                        
-                        // Get workout suggestions
-                        aiService.getWorkoutSuggestions(
-                            days = days,
-                            currentScores = groupScores,
-                            bodyFatPercent = bf
-                        ).fold(
-                            onSuccess = { suggestions ->
-                                aiSuggestions = (aiSuggestions ?: "") + "\n\n" + suggestions
-                            },
-                            onFailure = { /* Ignore */ }
-                        )
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !isLoading
+        // Automatic Analysis Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                if (isLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                Text(
+                    "Automatic Analysis",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                
+                Text(
+                    "Gymini automatically analyzes your body photos, current scores, and goals to provide a full analysis with specific recommendations on what to do and how much to do to reach your goals.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                
+                if (frontPhotoUri == null || backPhotoUri == null) {
+                    Text(
+                        "Upload front and back photos above to enable automatic analysis.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
                 } else {
-                    Text("Analyze with AI")
+                    if (isAnalyzing) {
+                        Column(
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            Text(
+                                "Analyzing your photos, scores, and goals...",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.alpha(0.7f)
+                            )
+                        }
+                    }
+                    
+                    comprehensiveAnalysisResult?.let { result ->
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.primaryContainer
+                            )
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    "Full Analysis & Action Plan",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                                Text(
+                                    result,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                                )
+                            }
+                        }
+                    }
                 }
             }
-        }
-        
-        // Loading indicator
-        if (isLoading) {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
         
         // Error message
@@ -2410,24 +2526,273 @@ private fun AIScreen(
                 )
             }
         }
-        
-        // AI Suggestions
-        aiSuggestions?.let { suggestions ->
-            Card(
-                modifier = Modifier.fillMaxWidth()
+    }
+}
+
+@Composable
+private fun ChatTab(
+    days: List<WorkoutDay>,
+    groupScores: Map<String, Int>,
+    bf: Float,
+    aiService: GeminiAIService,
+    coroutineScope: CoroutineScope
+) {
+    val scroll = rememberScrollState()
+    
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                Text(
+                    "Chat with Gymini",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                
+                Text(
+                    "Chat with Gymini, and it will answer incorporating your data. Your current workout data, muscle scores, and body fat percentage are automatically included as context.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                
+                var promptText by remember { mutableStateOf("") }
+                var promptResponse by remember { mutableStateOf<String?>(null) }
+                var isPromptLoading by remember { mutableStateOf(false) }
+                var promptError by remember { mutableStateOf<String?>(null) }
+                
+                OutlinedTextField(
+                    value = promptText,
+                    onValueChange = { promptText = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = { Text("e.g., How can I improve my chest development?") },
+                    maxLines = 4,
+                    enabled = !isPromptLoading
+                )
+                
+                Button(
+                    onClick = {
+                        if (promptText.isNotBlank()) {
+                            isPromptLoading = true
+                            promptError = null
+                            promptResponse = null
+                            
+                            coroutineScope.launch {
+                                aiService.sendCustomPrompt(
+                                    prompt = promptText,
+                                    days = days,
+                                    currentScores = groupScores,
+                                    bodyFatPercent = bf
+                                ).fold(
+                                    onSuccess = { response ->
+                                        promptResponse = response
+                                        isPromptLoading = false
+                                    },
+                                    onFailure = { e ->
+                                        promptError = "Failed to get response: ${e.message}"
+                                        isPromptLoading = false
+                                    }
+                                )
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isPromptLoading && promptText.isNotBlank()
                 ) {
+                    if (isPromptLoading) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    } else {
+                        Text("Send Prompt")
+                    }
+                }
+                
+                if (isPromptLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                
+                promptError?.let { error ->
                     Text(
-                        "AI Analysis & Suggestions",
-                        style = MaterialTheme.typography.titleMedium
+                        error,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
                     )
-                    Text(
-                        suggestions,
-                        style = MaterialTheme.typography.bodyMedium
+                }
+                
+                promptResponse?.let { response ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer
+                        )
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                "Gymini's Response",
+                                style = MaterialTheme.typography.titleSmall,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                response,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// -------------------- SETTINGS SCREEN --------------------
+
+@Composable
+private fun SettingsScreen(
+    profile: Profile,
+    unitSystem: UnitSystem,
+    onProfileClick: () -> Unit,
+    onUnitsClick: () -> Unit,
+    onExport: () -> Unit,
+    onImport: () -> Unit,
+    onClearData: () -> Unit
+) {
+    val scroll = rememberScrollState()
+    
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        // Profile Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Profile",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Manage your personal information and body metrics",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                Button(
+                    onClick = onProfileClick,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Edit Profile")
+                }
+            }
+        }
+        
+        // Units Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Units",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Current: ${if (unitSystem == UnitSystem.METRIC) "Metric (kg, cm)" else "Imperial (lb, ft)"}",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Button(
+                    onClick = onUnitsClick,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Change Units")
+                }
+            }
+        }
+        
+        // Data Management Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Data Management",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Export or import your workout data",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = onExport,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Export Data")
+                    }
+                    Button(
+                        onClick = onImport,
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Text("Import Data")
+                    }
+                }
+            }
+        }
+        
+        // Danger Zone Section
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f)
+            )
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Danger Zone",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Text(
+                    "Permanently delete all workout data. This cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onErrorContainer
+                )
+                OutlinedButton(
+                    onClick = onClearData,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
                     )
+                ) {
+                    Text("Clear All Data")
                 }
             }
         }

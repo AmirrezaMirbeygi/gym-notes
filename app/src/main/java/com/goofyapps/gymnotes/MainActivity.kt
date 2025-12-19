@@ -29,6 +29,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -49,6 +51,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -155,6 +159,12 @@ data class Profile(
     }
 }
 
+// Schedule item can be an exercise card ID or "rest"
+sealed class ScheduleItem {
+    data class ExerciseCard(val cardId: Long) : ScheduleItem()
+    data object Rest : ScheduleItem()
+}
+
 sealed class Screen {
     data object Workout : Screen()
     data object Progress : Screen()
@@ -242,6 +252,8 @@ private const val KEY_AI_GENERATED_IMAGE = "ai_generated_image_uri"
 private const val KEY_SHOW_AI_IMAGE = "show_ai_image_toggle"
 private const val KEY_CHAT_HISTORY = "chat_history"
 private const val KEY_ANALYSIS_RESULT = "analysis_result"
+private const val KEY_SCHEDULE = "schedule"
+private const val KEY_SCHEDULE_SUGGESTIONS = "schedule_suggestions"
 
 private enum class UnitSystem { METRIC, IMPERIAL }
 
@@ -461,6 +473,70 @@ private fun saveGoals(context: Context, goals: Goals) {
         .apply()
 }
 
+// -------------------- SCHEDULE --------------------
+
+// Schedule: Map of day index (0=Monday, 6=Sunday) to list of ScheduleItems
+private typealias Schedule = Map<Int, List<ScheduleItem>>
+
+private fun serializeSchedule(schedule: Schedule): String {
+    val obj = JSONObject()
+    schedule.forEach { (dayIndex, items) ->
+        val itemsArray = JSONArray()
+        items.forEach { item ->
+            when (item) {
+                is ScheduleItem.ExerciseCard -> {
+                    itemsArray.put(JSONObject().apply {
+                        put("type", "exercise")
+                        put("cardId", item.cardId)
+                    })
+                }
+                is ScheduleItem.Rest -> {
+                    itemsArray.put(JSONObject().apply {
+                        put("type", "rest")
+                    })
+                }
+            }
+        }
+        obj.put(dayIndex.toString(), itemsArray)
+    }
+    return obj.toString()
+}
+
+private fun parseSchedule(json: String): Schedule {
+    return try {
+        val obj = JSONObject(json)
+        val result = mutableMapOf<Int, List<ScheduleItem>>()
+        for (i in 0..6) {
+            val itemsArray = obj.optJSONArray(i.toString()) ?: JSONArray()
+            val items = mutableListOf<ScheduleItem>()
+            for (j in 0 until itemsArray.length()) {
+                val itemObj = itemsArray.getJSONObject(j)
+                when (itemObj.getString("type")) {
+                    "exercise" -> items.add(ScheduleItem.ExerciseCard(itemObj.getLong("cardId")))
+                    "rest" -> items.add(ScheduleItem.Rest)
+                }
+            }
+            result[i] = items
+        }
+        result
+    } catch (e: Exception) {
+        emptyMap()
+    }
+}
+
+private fun loadSchedule(context: Context): Schedule {
+    val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_SCHEDULE, null) ?: return emptyMap()
+    return parseSchedule(json)
+}
+
+private fun saveSchedule(context: Context, schedule: Schedule) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_SCHEDULE, serializeSchedule(schedule))
+        .apply()
+}
+
 // -------------------- VIDEO --------------------
 
 private fun loadVideoThumbnail(context: Context, uri: Uri): Bitmap? {
@@ -671,7 +747,7 @@ private fun AppRoot() {
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             when (val s = screen) {
-                is Screen.Workout -> WorkoutHome(
+                is Screen.Workout -> WorkoutScreen(
                     days = days,
                     unitSystem = unitSystem,
                     onOpenDay = { idx -> screen = Screen.DayDetail(idx) },
@@ -974,7 +1050,45 @@ private fun UnitsDialog(
 // -------------------- WORKOUT HOME --------------------
 
 @Composable
-private fun WorkoutHome(
+private fun WorkoutScreen(
+    days: MutableList<WorkoutDay>,
+    unitSystem: UnitSystem,
+    onOpenDay: (Int) -> Unit,
+    onSave: () -> Unit
+) {
+    var selectedTab by remember { mutableStateOf(0) }
+    
+    Column(Modifier.fillMaxSize()) {
+        TabRow(selectedTabIndex = selectedTab) {
+            Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Muscles") }
+            )
+            Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("Schedule") }
+            )
+        }
+        
+        when (selectedTab) {
+            0 -> MusclesTab(
+                days = days,
+                unitSystem = unitSystem,
+                onOpenDay = onOpenDay,
+                onSave = onSave
+            )
+            1 -> ScheduleTab(
+                days = days,
+                onSave = onSave
+            )
+        }
+    }
+}
+
+@Composable
+private fun MusclesTab(
     days: MutableList<WorkoutDay>,
     unitSystem: UnitSystem,
     onOpenDay: (Int) -> Unit,
@@ -1010,8 +1124,6 @@ private fun WorkoutHome(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text("Muscle Groups", style = MaterialTheme.typography.titleMedium)
-
             if (days.isEmpty()) {
                 Text("No groups yet. Tap + to add one.", style = MaterialTheme.typography.bodyMedium)
             } else {
@@ -1062,6 +1174,323 @@ private fun WorkoutHome(
                 days.add(WorkoutDay(groupId = groupId, groupCustomName = custom))
                 onSave()
                 showAddDay = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun ScheduleTab(
+    days: MutableList<WorkoutDay>,
+    onSave: () -> Unit
+) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var schedule by remember { mutableStateOf(loadSchedule(context)) }
+    var selectedDayIndex by remember { mutableStateOf(0) } // 0=Monday, 6=Sunday
+    var showAddDialog by remember { mutableStateOf(false) }
+    var showMuscleGroups by remember { mutableStateOf(false) }
+    var selectedMuscleGroup: MuscleGroup? by remember { mutableStateOf(null) }
+    
+    val dayNamesShort = listOf("M", "T", "W", "T", "F", "S", "S")
+    val dayNamesFull = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+    val selectedDayItems = schedule[selectedDayIndex] ?: emptyList()
+    
+    // Get all exercise cards from all workout days
+    val allExerciseCards = remember(days) {
+        days.flatMap { day -> day.exercises }
+    }
+    
+    fun updateSchedule(newSchedule: Schedule) {
+        schedule = newSchedule
+        saveSchedule(context, newSchedule)
+    }
+    
+    fun addItemToDay(item: ScheduleItem) {
+        val currentItems = schedule[selectedDayIndex] ?: emptyList()
+        val newItems = currentItems + item
+        val newSchedule = schedule.toMutableMap().apply {
+            put(selectedDayIndex, newItems)
+        }
+        updateSchedule(newSchedule)
+        showAddDialog = false
+        showMuscleGroups = false
+        selectedMuscleGroup = null
+    }
+    
+    fun removeItemFromDay(index: Int) {
+        val currentItems = schedule[selectedDayIndex] ?: emptyList()
+        val newItems = currentItems.toMutableList().apply { removeAt(index) }
+        val newSchedule = schedule.toMutableMap().apply {
+            put(selectedDayIndex, newItems)
+        }
+        updateSchedule(newSchedule)
+    }
+    
+    // Get exercise card by ID
+    fun getExerciseCard(cardId: Long): ExerciseCard? {
+        return allExerciseCards.find { it.id == cardId }
+    }
+    
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // 7 days on top - selected day shows full name, others show first letter
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            dayNamesShort.forEachIndexed { index, shortName ->
+                val isSelected = selectedDayIndex == index
+                FilledTonalButton(
+                    onClick = { 
+                        selectedDayIndex = index
+                    },
+                    modifier = Modifier
+                        .weight(if (isSelected) 2.5f else 1f)
+                        .then(if (!isSelected) Modifier.widthIn(min = 32.dp) else Modifier),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = if (isSelected) 
+                            MaterialTheme.colorScheme.primary 
+                        else 
+                            MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = if (isSelected)
+                            MaterialTheme.colorScheme.onPrimary
+                        else
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = if (isSelected) ButtonDefaults.ContentPadding else PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    Text(
+                        text = if (isSelected) dayNamesFull[index] else shortName,
+                        style = if (isSelected) MaterialTheme.typography.labelLarge else MaterialTheme.typography.labelSmall,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        
+        // Cards for selected day
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (selectedDayItems.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        "No workouts scheduled for ${dayNamesFull[selectedDayIndex]}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.alpha(0.7f)
+                    )
+                }
+            } else {
+                LazyColumn(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(selectedDayItems) { index, item ->
+                        val exerciseCard = when (item) {
+                            is ScheduleItem.ExerciseCard -> getExerciseCard(item.cardId)
+                            is ScheduleItem.Rest -> null
+                        }
+                        
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    if (item is ScheduleItem.Rest) {
+                                        Text(
+                                            "Rest Day",
+                                            style = MaterialTheme.typography.titleMedium
+                                        )
+                                        Text(
+                                            "Take a break and recover",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            modifier = Modifier.alpha(0.7f)
+                                        )
+                                    } else {
+                                        exerciseCard?.let { card ->
+                                            Text(
+                                                card.equipmentName,
+                                                style = MaterialTheme.typography.titleMedium
+                                            )
+                                            Text(
+                                                "${card.sets} sets × ${card.reps} reps${if (card.weight != null) " @ ${card.weight}${card.weightUnit}" else ""}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.alpha(0.7f)
+                                            )
+                                        } ?: Text(
+                                            "Exercise not found",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.alpha(0.7f)
+                                        )
+                                    }
+                                }
+                                
+                                IconButton(
+                                    onClick = { removeItemFromDay(index) }
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Delete,
+                                        contentDescription = "Delete"
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Add button
+        FloatingActionButton(
+            onClick = { showAddDialog = true },
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = "Add")
+        }
+    }
+    
+    // Add dialog: muscle groups or rest
+    if (showAddDialog && !showMuscleGroups) {
+        AlertDialog(
+            onDismissRequest = { showAddDialog = false },
+            title = { Text("Add to Schedule") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Choose what to add to ${dayNamesFull[selectedDayIndex]}:")
+                    OutlinedButton(
+                        onClick = { 
+                            showMuscleGroups = true
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Exercise Card")
+                    }
+                    OutlinedButton(
+                        onClick = { 
+                            addItemToDay(ScheduleItem.Rest)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Rest Day")
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showAddDialog = false }) { Text("Cancel") } }
+        )
+    }
+    
+    // Muscle groups selection
+    if (showMuscleGroups && selectedMuscleGroup == null) {
+        AlertDialog(
+            onDismissRequest = { 
+                showMuscleGroups = false
+                showAddDialog = false
+            },
+            title = { Text("Select Muscle Group") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    MuscleGroup.entries.forEach { group ->
+                        OutlinedButton(
+                            onClick = { selectedMuscleGroup = group },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(group.displayName)
+                        }
+                    }
+                }
+            },
+            confirmButton = { 
+                TextButton(onClick = { 
+                    showMuscleGroups = false
+                    showAddDialog = false
+                }) { Text("Cancel") } 
+            }
+        )
+    }
+    
+    // Exercise cards in selected muscle group
+    if (selectedMuscleGroup != null) {
+        // Get all exercise cards that have this muscle group as primary muscle
+        val groupExerciseCards = allExerciseCards.filter { card ->
+            card.primaryMuscleId?.let { muscleId ->
+                // Check if the muscle belongs to the selected group
+                Muscle.entries.firstOrNull { it.id == muscleId }?.groupId == selectedMuscleGroup!!.id
+            } ?: false
+        }
+        
+        AlertDialog(
+            onDismissRequest = { 
+                selectedMuscleGroup = null
+                showMuscleGroups = false
+                showAddDialog = false
+            },
+            title = { Text("Select Exercise Card") },
+            text = {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (groupExerciseCards.isEmpty()) {
+                        item {
+                            Text("No exercise cards found for ${selectedMuscleGroup!!.displayName}")
+                        }
+                    } else {
+                        items(groupExerciseCards) { card ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { 
+                                        addItemToDay(ScheduleItem.ExerciseCard(card.id))
+                                    },
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    Text(
+                                        card.equipmentName,
+                                        style = MaterialTheme.typography.titleMedium
+                                    )
+                                    Text(
+                                        "${card.sets} sets × ${card.reps} reps${if (card.weight != null) " @ ${card.weight}${card.weightUnit}" else ""}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.alpha(0.7f)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = { 
+                TextButton(onClick = { 
+                    selectedMuscleGroup = null
+                    showMuscleGroups = false
+                    showAddDialog = false
+                }) { Text("Cancel") } 
             }
         )
     }
@@ -2202,6 +2631,18 @@ private fun saveAnalysisResult(context: Context, result: String) {
         .apply()
 }
 
+private fun loadScheduleSuggestions(context: Context): String? {
+    return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .getString(KEY_SCHEDULE_SUGGESTIONS, null)
+}
+
+private fun saveScheduleSuggestions(context: Context, suggestions: String) {
+    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        .edit()
+        .putString(KEY_SCHEDULE_SUGGESTIONS, suggestions)
+        .apply()
+}
+
 // -------------------- AI SCREEN --------------------
 
 @Composable
@@ -2344,7 +2785,14 @@ private fun AIScreen(
                 isAnalyzing = isAnalyzing,
                 aiError = aiError,
                 context = context,
-                onRefreshAnalysis = { triggerAnalysis() }
+                onRefreshAnalysis = { triggerAnalysis() },
+                days = days,
+                groupScores = groupScores,
+                bf = bf,
+                aiService = aiService,
+                coroutineScope = coroutineScope,
+                schedule = loadSchedule(context),
+                allExerciseCards = days.flatMap { it.exercises }
             )
             1 -> ChatTab(
                 days = days,
@@ -2368,7 +2816,14 @@ private fun AnalysisTab(
     isAnalyzing: Boolean,
     aiError: String?,
     context: Context,
-    onRefreshAnalysis: () -> Unit
+    onRefreshAnalysis: () -> Unit,
+    days: List<WorkoutDay>,
+    groupScores: Map<String, Int>,
+    bf: Float,
+    aiService: GeminiAIService,
+    coroutineScope: CoroutineScope,
+    schedule: Schedule,
+    allExerciseCards: List<ExerciseCard>
 ) {
     val scroll = rememberScrollState()
     
@@ -2379,50 +2834,44 @@ private fun AnalysisTab(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        // Body Photos Section
-        Card(
-            modifier = Modifier.fillMaxWidth()
+        // Visual Assessment Section (collapsible)
+        var photosExpanded by remember { mutableStateOf(true) }
+        
+        CollapsibleCard(
+            title = "Visual Assessment",
+            expanded = photosExpanded,
+            onToggle = { photosExpanded = !photosExpanded }
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            Text(
+                "Upload front and back full body photos for AI analysis.",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.alpha(0.7f)
+            )
+            
+            OutlinedButton(
+                onClick = {
+                    // Launch front photo first, then back
+                    if (frontPhotoUri == null) {
+                        frontPhotoLauncher.launch("image/*")
+                    } else if (backPhotoUri == null) {
+                        backPhotoLauncher.launch("image/*")
+                    } else {
+                        // Both photos exist, allow changing front photo
+                        frontPhotoLauncher.launch("image/*")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
             ) {
+                Text(if (frontPhotoUri == null || backPhotoUri == null) "Add Body Photos" else "Change Photos")
+            }
+            
+            if (frontPhotoUri != null && backPhotoUri != null) {
                 Text(
-                    "Body Photos",
-                    style = MaterialTheme.typography.titleMedium
+                    "Photos uploaded. Use refresh button below to generate analysis.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 4.dp)
                 )
-                
-                Text(
-                    "Upload front and back full body photos for AI analysis.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.alpha(0.7f)
-                )
-                
-                OutlinedButton(
-                    onClick = {
-                        // Launch front photo first, then back
-                        if (frontPhotoUri == null) {
-                            frontPhotoLauncher.launch("image/*")
-                        } else if (backPhotoUri == null) {
-                            backPhotoLauncher.launch("image/*")
-                        } else {
-                            // Both photos exist, allow changing front photo
-                            frontPhotoLauncher.launch("image/*")
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(if (frontPhotoUri == null || backPhotoUri == null) "Add Body Photos" else "Change Photos")
-                }
-                
-                if (frontPhotoUri != null && backPhotoUri != null) {
-                    Text(
-                        "Photos uploaded. Use refresh button below to generate analysis.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 4.dp)
-                    )
-                }
             }
         }
         
@@ -2473,27 +2922,82 @@ private fun AnalysisTab(
             }
         }
         
-        // Analysis Section
-        Card(
-            modifier = Modifier.fillMaxWidth()
+        // Schedule Suggestions Section (collapsible)
+        var suggestionsExpanded by remember { mutableStateOf(true) }
+        var suggestionsResult by remember { mutableStateOf<String?>(loadScheduleSuggestions(context)) }
+        var isLoadingSuggestions by remember { mutableStateOf(false) }
+        var suggestionsError by remember { mutableStateOf<String?>(null) }
+        
+        CollapsibleCard(
+            title = "Schedule Suggestions",
+            expanded = suggestionsExpanded,
+            onToggle = { suggestionsExpanded = !suggestionsExpanded }
         ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            Text(
+                "Gymini analyzes your weekly schedule and provides optimization suggestions to improve your workout routine.",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.alpha(0.7f)
+            )
+            
+            if (suggestionsResult == null && !isLoadingSuggestions) {
+                Button(
+                    onClick = {
+                        isLoadingSuggestions = true
+                        suggestionsError = null
+                        coroutineScope.launch {
+                            aiService.getScheduleSuggestions(
+                                schedule = schedule,
+                                allExerciseCards = allExerciseCards,
+                                currentScores = groupScores
+                            ).fold(
+                                onSuccess = { result ->
+                                    suggestionsResult = result
+                                    saveScheduleSuggestions(context, result)
+                                    isLoadingSuggestions = false
+                                },
+                                onFailure = { e ->
+                                    suggestionsError = "Failed to get suggestions: ${e.message}"
+                                    isLoadingSuggestions = false
+                                }
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Get Schedule Suggestions")
+                }
+            }
+            
+            if (suggestionsResult != null) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.End
                 ) {
-                    Text(
-                        "Analysis",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    
                     Button(
-                        onClick = onRefreshAnalysis,
-                        enabled = frontPhotoUri != null && backPhotoUri != null && !isAnalyzing,
+                        onClick = {
+                            suggestionsResult = null
+                            saveScheduleSuggestions(context, "")
+                            isLoadingSuggestions = true
+                            suggestionsError = null
+                            coroutineScope.launch {
+                                aiService.getScheduleSuggestions(
+                                    schedule = schedule,
+                                    allExerciseCards = allExerciseCards,
+                                    currentScores = groupScores
+                                ).fold(
+                                    onSuccess = { result ->
+                                        suggestionsResult = result
+                                        saveScheduleSuggestions(context, result)
+                                        isLoadingSuggestions = false
+                                    },
+                                    onFailure = { e ->
+                                        suggestionsError = "Failed to get suggestions: ${e.message}"
+                                        isLoadingSuggestions = false
+                                    }
+                                )
+                            }
+                        },
+                        enabled = !isLoadingSuggestions,
                         modifier = Modifier.height(36.dp)
                     ) {
                         Icon(
@@ -2501,48 +3005,104 @@ private fun AnalysisTab(
                             contentDescription = "Refresh",
                             modifier = Modifier.size(18.dp)
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Refresh")
+                    }
+                }
+            }
+            
+            if (isLoadingSuggestions) {
+                Column(
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "Getting suggestions...",
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.alpha(0.7f)
+                    )
+                }
+            }
+            
+            suggestionsError?.let { error ->
+                Text(
+                    error,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
+            
+            suggestionsResult?.let { result ->
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 12.dp)
+                )
+                
+                MarkdownText(
+                    text = result,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
+        
+        // Analysis Section (collapsible)
+        var analysisExpanded by remember { mutableStateOf(true) }
+        
+        CollapsibleCard(
+            title = "Analysis",
+            expanded = analysisExpanded,
+            onToggle = { analysisExpanded = !analysisExpanded }
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                Button(
+                    onClick = onRefreshAnalysis,
+                    enabled = frontPhotoUri != null && backPhotoUri != null && !isAnalyzing,
+                    modifier = Modifier.height(36.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Refresh,
+                        contentDescription = "Refresh",
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+            
+            Text(
+                "Gymini analyzes your body photos, current scores, and goals to provide a full analysis with specific recommendations on what to do and how much to do to reach your goals.",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.alpha(0.7f)
+            )
+            
+            if (frontPhotoUri == null || backPhotoUri == null) {
+                Text(
+                    "Upload body photos above to enable analysis.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            } else {
+                if (isAnalyzing) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            "Analyzing your photos, scores, and goals...",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.alpha(0.7f)
+                        )
                     }
                 }
                 
-                Text(
-                    "Gymini analyzes your body photos, current scores, and goals to provide a full analysis with specific recommendations on what to do and how much to do to reach your goals.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.alpha(0.7f)
-                )
-                
-                if (frontPhotoUri == null || backPhotoUri == null) {
-                    Text(
-                        "Upload body photos above to enable analysis.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(top = 8.dp)
+                comprehensiveAnalysisResult?.let { result ->
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp)
                     )
-                } else {
-                    if (isAnalyzing) {
-                        Column(
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            Text(
-                                "Analyzing your photos, scores, and goals...",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.alpha(0.7f)
-                            )
-                        }
-                    }
                     
-                    comprehensiveAnalysisResult?.let { result ->
-                        HorizontalDivider(
-                            modifier = Modifier.padding(vertical = 12.dp)
-                        )
-                        
-                        MarkdownText(
-                            text = result,
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
+                    MarkdownText(
+                        text = result,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             }
         }
@@ -2727,6 +3287,47 @@ private fun ChatTab(
                     contentDescription = "Send",
                     tint = MaterialTheme.colorScheme.onPrimary
                 )
+            }
+        }
+    }
+}
+
+// -------------------- COLLAPSIBLE CARD --------------------
+
+@Composable
+private fun CollapsibleCard(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit
+) {
+    Card(
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onToggle() },
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Icon(
+                    if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                    contentDescription = if (expanded) "Collapse" else "Expand"
+                )
+            }
+            
+            if (expanded) {
+                content()
             }
         }
     }

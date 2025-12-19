@@ -148,14 +148,13 @@ class GeminiAIService(private val context: Context) {
     /**
      * Get workout suggestions based on exercise cards and current scores.
      */
-    suspend fun getWorkoutSuggestions(
-        days: List<WorkoutDay>,
-        currentScores: Map<String, Int>,
-        bodyFatPercent: Float
+    suspend fun getScheduleSuggestions(
+        schedule: Map<Int, List<ScheduleItem>>,
+        allExerciseCards: List<ExerciseCard>,
+        currentScores: Map<String, Int>
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val workoutSummary = buildWorkoutSummary(days)
-            val prompt = buildSuggestionPrompt(workoutSummary, currentScores, bodyFatPercent)
+            val prompt = buildScheduleSuggestionPrompt(schedule, allExerciseCards, currentScores)
             
             val model = GenerativeModel(
                 modelName = textModelName,
@@ -163,11 +162,11 @@ class GeminiAIService(private val context: Context) {
             )
             
             val response = model.generateContent(prompt)
-            val suggestions = response.text ?: "Unable to generate suggestions at this time."
+            val suggestions = response.text ?: "Unable to generate schedule suggestions at this time."
             
             Result.success(suggestions)
         } catch (e: Exception) {
-            Log.e("GeminiAI", "Error getting suggestions", e)
+            Log.e("GeminiAI", "Error getting schedule suggestions", e)
             Result.failure(e)
         }
     }
@@ -443,38 +442,54 @@ class GeminiAIService(private val context: Context) {
         )
     }
     
-    private fun buildSuggestionPrompt(
-        summary: WorkoutSummary,
-        scores: Map<String, Int>,
-        bodyFat: Float
+    private fun buildScheduleSuggestionPrompt(
+        schedule: Map<Int, List<ScheduleItem>>,
+        allExerciseCards: List<ExerciseCard>,
+        scores: Map<String, Int>
     ): String {
-        val exerciseDetails = summary.exercisesByGroup.entries.joinToString("\n") { (group, exercises) ->
-            "$group: ${exercises.size} exercises"
+        val dayNames = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        
+        val scheduleText = buildString {
+            for (i in 0..6) {
+                val items = schedule[i] ?: emptyList()
+                if (items.isNotEmpty()) {
+                    append("${dayNames[i]}: ")
+                    val exerciseNames = items.mapNotNull { item ->
+                        when (item) {
+                            is ScheduleItem.ExerciseCard -> {
+                                allExerciseCards.find { it.id == item.cardId }?.equipmentName
+                            }
+                            is ScheduleItem.Rest -> "Rest"
+                        }
+                    }
+                    append(exerciseNames.joinToString(", "))
+                    append("\n")
+                }
+            }
         }
         
-        return """
-            Based on this workout data, provide personalized suggestions:
-            
-            Workout Summary:
-            - Total exercises: ${summary.exerciseCount}
-            - Workout days: ${summary.totalDays}
-            - Exercises by muscle group:
-            $exerciseDetails
-            
-            Current scores:
-            - Chest: ${scores["chest"] ?: 0}/100
-            - Back: ${scores["back"] ?: 0}/100
-            - Core: ${scores["core"] ?: 0}/100
-            - Shoulders: ${scores["shoulders"] ?: 0}/100
-            - Arms: ${scores["arms"] ?: 0}/100
-            - Legs: ${scores["legs"] ?: 0}/100
-            - Body Fat: ${bodyFat}%
-            
-            Provide:
-            1. Which muscle groups need more work
-            2. Specific exercise recommendations
-            3. Tips for improvement
-        """.trimIndent()
+        val weakGroups = scores.filter { it.value < 50 }.keys.joinToString(", ") { it.replaceFirstChar { char -> char.uppercaseChar() } }
+        val strongGroups = scores.filter { it.value >= 70 }.keys.joinToString(", ") { it.replaceFirstChar { char -> char.uppercaseChar() } }
+        
+        return """You are Gymini, an AI fitness coach. Provide brief schedule optimization suggestions (keep response under 200 words).
+
+Current Weekly Schedule:
+$scheduleText
+
+Muscle Group Scores:
+- Chest: ${scores["chest"] ?: 0}/100
+- Back: ${scores["back"] ?: 0}/100
+- Core: ${scores["core"] ?: 0}/100
+- Shoulders: ${scores["shoulders"] ?: 0}/100
+- Arms: ${scores["arms"] ?: 0}/100
+- Legs: ${scores["legs"] ?: 0}/100
+
+Provide 2-3 specific, actionable suggestions to improve the weekly schedule. Focus on:
+1. Better muscle group distribution across days
+2. Adding exercises for weak areas (${if (weakGroups.isNotEmpty()) weakGroups else "none"})
+3. Optimizing rest days
+
+Keep it concise and practical.""".trimIndent()
     }
     
     private data class WorkoutSummary(

@@ -235,10 +235,11 @@ private fun loadChatHistory(context: Context): List<ChatMessage> {
 }
 
 private fun saveChatHistory(context: Context, messages: List<ChatMessage>) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_CHAT_HISTORY, serializeChatHistory(messages))
-        .apply()
+        .commit()
 }
 
 private const val PREFS_NAME = "gym_notes_prefs"
@@ -300,10 +301,11 @@ private fun serializeDays(days: List<WorkoutDay>): String {
 }
 
 private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
-    val daysArray = JSONArray(json)
-    val result = mutableListOf<WorkoutDay>()
+    return try {
+        val daysArray = JSONArray(json)
+        val result = mutableListOf<WorkoutDay>()
 
-    for (i in 0 until daysArray.length()) {
+        for (i in 0 until daysArray.length()) {
         val dayObj = daysArray.getJSONObject(i)
         val id = dayObj.optLong("id")
 
@@ -354,24 +356,29 @@ private fun parseDaysFromJson(json: String): MutableList<WorkoutDay> {
             )
         }
 
-        result.add(
-            WorkoutDay(
-                id = id,
-                groupId = groupId,
-                groupCustomName = groupCustomName,
-                exercises = exercises
+            result.add(
+                WorkoutDay(
+                    id = id,
+                    groupId = groupId,
+                    groupCustomName = groupCustomName,
+                    exercises = exercises
+                )
             )
-        )
-    }
+        }
 
-    return result
+        result
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error parsing workout days JSON", e)
+        mutableListOf() // Return empty list on error
+    }
 }
 
 private fun saveDays(context: Context, days: List<WorkoutDay>) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_DATA, serializeDays(days))
-        .apply()
+        .commit()
 }
 
 private fun loadDays(context: Context): MutableList<WorkoutDay> {
@@ -389,12 +396,17 @@ private fun serializeProfile(p: Profile): String =
     }.toString()
 
 private fun parseProfile(json: String): Profile {
-    val o = JSONObject(json)
-    val w = if (o.isNull("weightKg")) null else o.optDouble("weightKg").toFloat()
-    val h = if (o.isNull("heightCm")) null else o.optDouble("heightCm").toFloat()
-    val bf = if (o.isNull("bodyFatPct")) null else o.optDouble("bodyFatPct").toFloat()
-    val sex = o.optString("sex", "Unspecified")
-    return Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex)
+    return try {
+        val o = JSONObject(json)
+        val w = if (o.isNull("weightKg")) null else o.optDouble("weightKg").toFloat()
+        val h = if (o.isNull("heightCm")) null else o.optDouble("heightCm").toFloat()
+        val bf = if (o.isNull("bodyFatPct")) null else o.optDouble("bodyFatPct").toFloat()
+        val sex = o.optString("sex", "Unspecified")
+        Profile(weightKg = w, heightCm = h, bodyFatPct = bf, sex = sex)
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error parsing profile JSON", e)
+        Profile() // Return default profile on error
+    }
 }
 
 private fun loadProfile(context: Context): Profile {
@@ -404,10 +416,11 @@ private fun loadProfile(context: Context): Profile {
 }
 
 private fun saveProfile(context: Context, p: Profile) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_PROFILE, serializeProfile(p))
-        .apply()
+        .commit()
 }
 
 // -------------------- SETTINGS: UNITS --------------------
@@ -448,16 +461,21 @@ private fun serializeGoals(g: Goals): String =
     }.toString()
 
 private fun parseGoals(json: String): Goals {
-    val o = JSONObject(json)
-    val bf = o.optDouble("bodyFatPercent", 20.0).toFloat()
-    val groupsObj = o.optJSONObject("groups") ?: JSONObject()
-    val map = mutableMapOf<String, Int>()
-    val keys = groupsObj.keys()
-    while (keys.hasNext()) {
-        val k = keys.next()
-        map[k] = groupsObj.optInt(k, 0)
+    return try {
+        val o = JSONObject(json)
+        val bf = o.optDouble("bodyFatPercent", 20.0).toFloat()
+        val groupsObj = o.optJSONObject("groups") ?: JSONObject()
+        val map = mutableMapOf<String, Int>()
+        val keys = groupsObj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            map[k] = groupsObj.optInt(k, 0)
+        }
+        Goals(bodyFatPercent = bf.coerceIn(5f, 50f), groupScores = map)
+    } catch (e: Exception) {
+        android.util.Log.e("MainActivity", "Error parsing goals JSON", e)
+        Goals(bodyFatPercent = 20f, groupScores = emptyMap()) // Return default goals on error
     }
-    return Goals(bodyFatPercent = bf.coerceIn(5f, 50f), groupScores = map)
 }
 
 private fun loadGoals(context: Context): Goals? {
@@ -467,10 +485,11 @@ private fun loadGoals(context: Context): Goals? {
 }
 
 private fun saveGoals(context: Context, goals: Goals) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_GOALS, serializeGoals(goals))
-        .apply()
+        .commit()
 }
 
 // -------------------- SCHEDULE --------------------
@@ -531,10 +550,11 @@ private fun loadSchedule(context: Context): Schedule {
 }
 
 private fun saveSchedule(context: Context, schedule: Schedule) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_SCHEDULE, serializeSchedule(schedule))
-        .apply()
+        .commit()
 }
 
 // -------------------- VIDEO --------------------
@@ -1433,12 +1453,19 @@ private fun ScheduleTab(
     // Exercise cards in selected muscle group
     if (selectedMuscleGroup != null) {
         // Get all exercise cards that have this muscle group as primary muscle
-        val groupExerciseCards = allExerciseCards.filter { card ->
-            card.primaryMuscleId?.let { muscleId ->
-                // Check if the muscle belongs to the selected group
-                Muscle.entries.firstOrNull { it.id == muscleId }?.groupId == selectedMuscleGroup!!.id
-            } ?: false
+        val selectedGroup = selectedMuscleGroup // Safe local copy
+        val groupExerciseCards = if (selectedGroup != null) {
+            allExerciseCards.filter { card ->
+                card.primaryMuscleId?.let { muscleId ->
+                    // Check if the muscle belongs to the selected group
+                    Muscle.entries.firstOrNull { it.id == muscleId }?.groupId == selectedGroup.id
+                } ?: false
+            }
+        } else {
+            emptyList()
         }
+        
+        if (selectedGroup == null) return // Early return if null
         
         AlertDialog(
             onDismissRequest = { 
@@ -1454,7 +1481,7 @@ private fun ScheduleTab(
                 ) {
                     if (groupExerciseCards.isEmpty()) {
                         item {
-                            Text("No exercise cards found for ${selectedMuscleGroup!!.displayName}")
+                            Text("No exercise cards found for ${selectedGroup.displayName}")
                         }
                     } else {
                         items(groupExerciseCards) { card ->
@@ -1894,10 +1921,10 @@ private fun ExerciseDetailScreen(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        if (videoUri != null) {
+        videoUri?.let { uri ->
             VideoThumbnail(
-                uriString = videoUri!!,
-                modifier = Modifier.clickable { onPlayVideo(videoUri!!) }
+                uriString = uri,
+                modifier = Modifier.clickable { onPlayVideo(uri) }
             )
             Spacer(Modifier.height(4.dp))
         }
@@ -2625,10 +2652,11 @@ private fun loadAnalysisResult(context: Context): String? {
 }
 
 private fun saveAnalysisResult(context: Context, result: String) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_ANALYSIS_RESULT, result)
-        .apply()
+        .commit()
 }
 
 private fun loadScheduleSuggestions(context: Context): String? {
@@ -2637,10 +2665,11 @@ private fun loadScheduleSuggestions(context: Context): String? {
 }
 
 private fun saveScheduleSuggestions(context: Context, suggestions: String) {
+    // Use commit() for critical user data to ensure it's saved synchronously
     context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .edit()
         .putString(KEY_SCHEDULE_SUGGESTIONS, suggestions)
-        .apply()
+        .commit()
 }
 
 // -------------------- AI SCREEN --------------------
@@ -2730,14 +2759,16 @@ private fun AIScreen(
     
     // Manual analysis trigger function
     fun triggerAnalysis() {
-        if (frontPhotoUri != null && backPhotoUri != null && !isAnalyzing) {
+        val frontUri = frontPhotoUri
+        val backUri = backPhotoUri
+        if (frontUri != null && backUri != null && !isAnalyzing) {
             isAnalyzing = true
             comprehensiveAnalysisResult = null
             aiError = null
             coroutineScope.launch {
                 aiService.comprehensiveAnalysis(
-                    frontPhotoUri = frontPhotoUri!!,
-                    backPhotoUri = backPhotoUri!!,
+                    frontPhotoUri = frontUri,
+                    backPhotoUri = backUri,
                     currentScores = groupScores,
                     bodyFatPercent = bf,
                     goals = goals?.groupScores,

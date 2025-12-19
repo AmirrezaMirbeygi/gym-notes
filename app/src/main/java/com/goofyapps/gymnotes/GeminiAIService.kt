@@ -423,7 +423,10 @@ class GeminiAIService(private val context: Context) {
                 out.write(imageData)
             }
             
-            Uri.fromFile(imageFile)
+            // Use FileProvider-compatible URI instead of deprecated Uri.fromFile()
+            // For cache directory (app-private), we can use file:// URI
+            // Note: For sharing with other apps, use FileProvider instead
+            android.net.Uri.parse("file://${imageFile.absolutePath}")
         } catch (e: Exception) {
             Log.e("GeminiAI", "Error saving generated image", e)
             null

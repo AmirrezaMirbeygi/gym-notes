@@ -1,0 +1,35 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Rate limits collection - only allow writes from server
+    match /rateLimits/{document} {
+      // Document ID format: {userIdentifier}_{date} (e.g., "user123_2025-01-27" or "device456_2025-01-27")
+      // Only allow authenticated users to read their own rate limits (document ID starts with their UID)
+      // Unauthenticated users cannot read rate limits (they get info from backend response)
+      function isOwnRateLimit() {
+        return request.auth != null && 
+               document.matches('^' + request.auth.uid + '_.*$');
+      }
+      
+      allow read: if isOwnRateLimit();
+      allow write: if false; // Only server can write
+    }
+    
+    // Cooldowns collection - only allow writes from server
+    match /cooldowns/{document} {
+      // Document ID format: {userIdentifier}_{operation} (e.g., "user123_chat" or "device456_analysis")
+      // Only allow authenticated users to read their own cooldowns (document ID starts with their UID)
+      // Unauthenticated users cannot read cooldowns (they get info from backend response)
+      function isOwnCooldown() {
+        return request.auth != null && 
+               document.matches('^' + request.auth.uid + '_.*$');
+      }
+      
+      allow read: if isOwnCooldown();
+      allow write: if false; // Only server can write
+    }
+    
+  }
+}
+
+

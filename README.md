@@ -63,10 +63,13 @@ cd GymNotes
 
 4. **Configure Gemini API Key** (Required for AI features):
    - Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-   - Open `local.properties` in the project root
-   - Add this line: `GEMINI_API_KEY=your_actual_api_key_here`
-   - Replace `your_actual_api_key_here` with your actual Gemini API key
-   - **Note**: `local.properties` is already in `.gitignore`, so your API key won't be committed to version control
+   - The API key is stored securely in Firebase Secrets (not in the app code)
+   - Set the secret using Firebase CLI:
+     ```bash
+     firebase functions:secrets:set GEMINI_API_KEY
+     ```
+   - Enter your API key when prompted
+   - **Note**: The API key is never exposed to the client app. All Gemini API calls go through secure Firebase Functions with rate limiting.
 
 5. Build and run the app
 
@@ -195,7 +198,11 @@ Switch between metric and imperial units in Settings → Units. All data is stor
 - [x] Add comprehensive analysis with persistence
 - [x] Improve data persistence and error handling
 - [ ] Move Gemini API key to secure backend proxy (security improvement)
+  - [ ] Implement Firebase Functions backend
+  - [ ] Add rate limiting: 10 free prompts per day per device
+  - [ ] Migrate all Gemini API calls to use backend proxy
 - [ ] Add image extraction from Gemini API responses when image generation is implemented
+- [ ] **Empty State Suggestions**: When there is no schedule, no muscle groups, or no cards in a muscle group, show an option to create suggested cards, groups, and schedule (onboarding/UX improvement)
 
 ## Contributing
 

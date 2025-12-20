@@ -55,6 +55,8 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.FirebaseFunctionsException
 import kotlinx.coroutines.tasks.await
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -1227,11 +1229,14 @@ private fun AppRoot() {
         AlertDialog(
             onDismissRequest = { showClearConfirm = false },
             title = { Text("Clear all data?") },
-            text = { Text("This will delete all days and exercises. This cannot be undone.") },
+            text = { Text("This will delete all days, exercises, and schedule. This cannot be undone.") },
             confirmButton = {
                 TextButton(onClick = {
                     days.clear()
                     saveDays(context, days)
+                    // Clear schedule (all weekdays)
+                    val emptySchedule = emptyMap<Int, List<ScheduleItem>>()
+                    updateSchedule(emptySchedule)
                     showClearConfirm = false
                     screen = Screen.Workout
                 }) { Text("Delete") }
@@ -4195,13 +4200,220 @@ private fun SettingsScreen(
                     ) {
                         Text("Export Data")
                     }
+                    var showImportDialog by remember { mutableStateOf(false) }
+                    
                     Button(
                         onClick = {
-                            importLauncher.launch(arrayOf("text/plain", "text/*"))
+                            showImportDialog = true
                         },
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Import Data")
+                    }
+                    
+                    // Import options dialog
+                    if (showImportDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showImportDialog = false },
+                            title = { Text("Import Data") },
+                            text = {
+                                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                    Text("Choose how you want to import your data:")
+                                    Button(
+                                        onClick = {
+                                            showImportDialog = false
+                                            importLauncher.launch(arrayOf("text/plain", "text/*"))
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Import from File")
+                                    }
+                                    Button(
+                                        onClick = {
+                                            showImportDialog = false
+                                            // Import from cloud
+                                            coroutineScope.launch {
+                                                try {
+                                                    // Get user identifier (same pattern as backup)
+                                                    val auth = FirebaseAuth.getInstance()
+                                                    val currentUser = auth.currentUser
+                                                    
+                                                    val data = mutableMapOf<String, Any>()
+                                                    data["operation"] = "retrieve"
+                                                    
+                                                    if (currentUser != null && currentUser.uid.isNotBlank()) {
+                                                        data["userId"] = currentUser.uid
+                                                        android.util.Log.d("Import", "Using userId: ${currentUser.uid}")
+                                                    } else {
+                                                        // Get device ID
+                                                        val prefs = context.getSharedPreferences("gymnotes_prefs", Context.MODE_PRIVATE)
+                                                        var deviceId = prefs.getString("device_id", null)
+                                                        
+                                                        if (deviceId.isNullOrBlank()) {
+                                                            val installationId = try {
+                                                                com.google.firebase.installations.FirebaseInstallations.getInstance().id.await()
+                                                            } catch (e: Exception) {
+                                                                "device_${System.currentTimeMillis()}_${(0..9999).random()}"
+                                                            }
+                                                            deviceId = installationId
+                                                            prefs.edit().putString("device_id", deviceId).commit()
+                                                        }
+                                                        
+                                                        data["deviceId"] = deviceId
+                                                        android.util.Log.d("Import", "Using deviceId: $deviceId")
+                                                    }
+                                                    
+                                                    // Call BUproxy function to retrieve
+                                                    val functions = FirebaseFunctions.getInstance()
+                                                    val result = functions
+                                                        .getHttpsCallable("BUproxy")
+                                                        .call(data)
+                                                        .await()
+                                                    
+                                                    val resultData = result.data as? Map<*, *>
+                                                    val success = resultData?.get("success") as? Boolean ?: false
+                                                    
+                                                    if (success) {
+                                                        val dataString = resultData?.get("text") as? String
+                                                        if (!dataString.isNullOrBlank()) {
+                                                            val importResult = importAllDataFromString(dataString)
+                                                            if (importResult.success) {
+                                                                importResult.days?.let {
+                                                                    days.clear()
+                                                                    days.addAll(it)
+                                                                    saveDays(context, it)
+                                                                }
+                                                                importResult.profile?.let {
+                                                                    onProfileChanged(it)
+                                                                }
+                                                                importResult.schedule?.let {
+                                                                    onScheduleChanged(it)
+                                                                }
+                                                                importResult.goals?.let {
+                                                                    onGoalsChanged(it)
+                                                                }
+                                                                android.util.Log.d("Import", "Successfully imported from cloud")
+                                                            } else {
+                                                                android.util.Log.e("Import", "Import failed: ${importResult.error}")
+                                                            }
+                                                        } else {
+                                                            android.util.Log.e("Import", "No data in backup")
+                                                        }
+                                                    } else {
+                                                        val message = resultData?.get("message") as? String ?: "No backup found"
+                                                        android.util.Log.e("Import", "Retrieve failed: $message")
+                                                    }
+                                                } catch (e: FirebaseFunctionsException) {
+                                                    android.util.Log.e("Import", "Firebase Functions error", e)
+                                                } catch (e: Exception) {
+                                                    android.util.Log.e("Import", "Error importing from cloud", e)
+                                                }
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text("Import from Cloud")
+                                    }
+                                }
+                            },
+                            confirmButton = {
+                                TextButton(onClick = { showImportDialog = false }) {
+                                    Text("Cancel")
+                                }
+                            }
+                        )
+                    }
+                }
+                
+                // Backup to Cloud button
+                var isUploadingBackup by remember { mutableStateOf(false) }
+                var backupMessage by remember { mutableStateOf<String?>(null) }
+                
+                if (backupMessage != null) {
+                    Text(
+                        backupMessage!!,
+                        color = if (backupMessage!!.startsWith("✅")) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                
+                Button(
+                    onClick = {
+                        isUploadingBackup = true
+                        backupMessage = null
+                        coroutineScope.launch {
+                            try {
+                                // Export all data first
+                                val auth = FirebaseAuth.getInstance()
+                                val currentUser = auth.currentUser
+                                val email = currentUser?.email
+                                
+                                val dataString = exportAllDataToString(days, profile, schedule, goals, email)
+                                android.util.Log.d("Backup", "Exported data length: ${dataString.length} bytes")
+                                
+                                // Get user identifier (same pattern as geminiProxy)
+                                val data = mutableMapOf<String, Any>()
+                                data["text"] = dataString
+                                
+                                if (currentUser != null && currentUser.uid.isNotBlank()) {
+                                    data["userId"] = currentUser.uid
+                                    android.util.Log.d("Backup", "Using userId: ${currentUser.uid}")
+                                } else {
+                                    // Get device ID (similar to GeminiAIService)
+                                    val prefs = context.getSharedPreferences("gymnotes_prefs", Context.MODE_PRIVATE)
+                                    var deviceId = prefs.getString("device_id", null)
+                                    
+                                    if (deviceId.isNullOrBlank()) {
+                                        // Generate device ID if not exists
+                                        val installationId = try {
+                                            com.google.firebase.installations.FirebaseInstallations.getInstance().id.await()
+                                        } catch (e: Exception) {
+                                            "device_${System.currentTimeMillis()}_${(0..9999).random()}"
+                                        }
+                                        deviceId = installationId
+                                        prefs.edit().putString("device_id", deviceId).commit()
+                                    }
+                                    
+                                    data["deviceId"] = deviceId
+                                    android.util.Log.d("Backup", "Using deviceId: $deviceId")
+                                }
+                                
+                                // Call BUproxy function (same pattern as geminiProxy)
+                                val functions = FirebaseFunctions.getInstance()
+                                val result = functions
+                                    .getHttpsCallable("BUproxy")
+                                    .call(data)
+                                    .await()
+                                
+                                val resultData = result.data as? Map<*, *>
+                                val success = resultData?.get("success") as? Boolean ?: false
+                                
+                                if (success) {
+                                    backupMessage = "✅ Backup uploaded to cloud successfully!"
+                                    android.util.Log.d("Backup", "Successfully uploaded backup to test collection")
+                                } else {
+                                    backupMessage = "❌ Error: Upload failed"
+                                    android.util.Log.e("Backup", "Upload returned success=false")
+                                }
+                            } catch (e: FirebaseFunctionsException) {
+                                val errorMsg = e.message ?: "Unknown error"
+                                backupMessage = "❌ Error: $errorMsg"
+                                android.util.Log.e("Backup", "Firebase Functions error", e)
+                            } catch (e: Exception) {
+                                backupMessage = "❌ Error: ${e.message ?: "Unknown error"}"
+                                android.util.Log.e("Backup", "Error uploading to cloud", e)
+                            } finally {
+                                isUploadingBackup = false
+                            }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isUploadingBackup
+                ) {
+                    if (isUploadingBackup) {
+                        Text("Uploading...")
+                    } else {
+                        Text("Backup to Cloud")
                     }
                 }
             }

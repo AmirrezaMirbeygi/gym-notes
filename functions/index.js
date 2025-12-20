@@ -220,6 +220,121 @@ exports.testFirestore = functions.https.onCall(async (data, context) => {
 });
 
 /**
+ * Backup proxy function - handles backup upload and retrieval
+ * Replicates the rate limiting pattern but for backup operations
+ * Operations: "upload" (writes to Firestore) or "retrieve" (reads from Firestore)
+ */
+exports.BUproxy = functions.https.onCall(async (requestData, context) => {
+  const data = requestData?.data || requestData;
+
+  // Validate identifier: accept either userId or deviceId
+  const userIdentifier = data?.userId || data?.deviceId;
+  const identifierType = data?.userId ? "userId" : "deviceId";
+
+  if (!userIdentifier || typeof userIdentifier !== "string" || userIdentifier.trim() === "") {
+    console.error("Invalid user identifier received:", {
+      userId: data?.userId,
+      deviceId: data?.deviceId,
+      type: typeof userIdentifier,
+    });
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "userId or deviceId is required and must be a non-empty string"
+    );
+  }
+
+  const operation = data?.operation || "upload"; // Default to upload for backward compatibility
+
+  console.log(`Backup ${operation} request from ${identifierType}: ${userIdentifier}`);
+
+  try {
+    if (operation === "retrieve") {
+      // Retrieve latest backup for this user
+      const testQuery = await db
+        .collection("test")
+        .where("userIdentifier", "==", userIdentifier)
+        .orderBy("timestamp", "desc")
+        .limit(1)
+        .get();
+
+      if (testQuery.empty) {
+        return {
+          success: false,
+          message: "No backup found",
+          text: null,
+        };
+      }
+
+      const latestDoc = testQuery.docs[0];
+      const docData = latestDoc.data();
+      const text = docData?.text || null;
+
+      if (!text) {
+        return {
+          success: false,
+          message: "Backup document has no text data",
+          text: null,
+        };
+      }
+
+      console.log(`Successfully retrieved backup: ${latestDoc.id}`);
+
+      return {
+        success: true,
+        documentId: latestDoc.id,
+        text: text,
+        message: "Retrieved successfully",
+      };
+    } else {
+      // Upload operation (default)
+      // Validate text to upload
+      const textToUpload = data?.text;
+      if (!textToUpload || typeof textToUpload !== "string") {
+        throw new functions.https.HttpsError(
+          "invalid-argument",
+          "text is required and must be a non-empty string"
+        );
+      }
+
+      // Write to Firestore test collection (server-side, bypasses security rules)
+      const testRef = db.collection("test").doc();
+      await testRef.set({
+        text: textToUpload,
+        userIdentifier: userIdentifier,
+        timestamp: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      console.log("Successfully uploaded to test collection:", testRef.id);
+
+      return {
+        success: true,
+        documentId: testRef.id,
+        message: "Uploaded successfully",
+      };
+    }
+  } catch (error) {
+    console.error(`Error in backup ${operation}:`, error?.code, error?.message || error);
+
+    // Handle NOT_FOUND error (database doesn't exist)
+    if (
+      error?.code === 5 ||
+      (typeof error?.message === "string" && error.message.includes("NOT_FOUND"))
+    ) {
+      console.error(`CRITICAL: Firestore database NOT_FOUND in backup ${operation}`);
+      throw new functions.https.HttpsError(
+        "failed-precondition",
+        `Firestore database not accessible: ${error.message}. Check Firestore named DB 'gymdb' exists and IAM.`
+      );
+    }
+
+    throw new functions.https.HttpsError(
+      "internal",
+      `Failed to ${operation}: ${error?.message || "Unknown error"}`
+    );
+  }
+});
+
+/**
  * Proxy function for Gemini API calls with rate limiting
  * Supports operations: chat, analysis, scheduleSuggestions
  */
@@ -386,7 +501,7 @@ function buildChatPrompt(userPrompt, context) {
   const { days, currentScores, bodyFatPercent } = context || {};
 
   let contextText =
-    'You are Gymini, an AI fitness coach. Always refer to yourself as "Gymini" in your responses. You can use pronouns when referring to yourself.\n\n';
+    'You are Gymini, an AI fitness coach. Be short and to the point in your responses. Do not introduce yourself or greet the user - just answer their question directly.\n\n';
 
   if (currentScores && typeof currentScores === "object") {
     contextText += `Current Muscle Group Scores (0-100):\n`;

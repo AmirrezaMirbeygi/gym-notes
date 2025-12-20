@@ -243,10 +243,18 @@ private fun parseChatHistory(json: String): List<ChatMessage> {
     }
 }
 
+private const val MAX_CHAT_MESSAGES = 50
+
 private fun loadChatHistory(context: Context): List<ChatMessage> {
     val json = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         .getString(KEY_CHAT_HISTORY, null) ?: return emptyList()
-    return parseChatHistory(json)
+    val allMessages = parseChatHistory(json)
+    // Keep only the last MAX_CHAT_MESSAGES messages
+    return if (allMessages.size > MAX_CHAT_MESSAGES) {
+        allMessages.takeLast(MAX_CHAT_MESSAGES)
+    } else {
+        allMessages
+    }
 }
 
 private fun saveChatHistory(context: Context, messages: List<ChatMessage>) {
@@ -3608,7 +3616,8 @@ private fun ChatTab(
                         promptText = ""
                         
                         // Add user message
-                        val newMessages = chatMessages + ChatMessage(userMessage, isUser = true)
+                        val newMessages = (chatMessages + ChatMessage(userMessage, isUser = true))
+                            .takeLast(MAX_CHAT_MESSAGES) // Keep only last 50 messages
                         chatMessages = newMessages
                         saveChatHistory(context, newMessages)
                         
@@ -3622,14 +3631,16 @@ private fun ChatTab(
                                 bodyFatPercent = bf
                             ).fold(
                                 onSuccess = { response ->
-                                    val updatedMessages = chatMessages + ChatMessage(response, isUser = false)
+                                    val updatedMessages = (chatMessages + ChatMessage(response, isUser = false))
+                                        .takeLast(MAX_CHAT_MESSAGES) // Keep only last 50 messages
                                     chatMessages = updatedMessages
                                     saveChatHistory(context, updatedMessages)
                                     isPromptLoading = false
                                 },
                                 onFailure = { e ->
                                     val errorMessage = "Sorry, I encountered an error: ${e.message}"
-                                    val updatedMessages = chatMessages + ChatMessage(errorMessage, isUser = false)
+                                    val updatedMessages = (chatMessages + ChatMessage(errorMessage, isUser = false))
+                                        .takeLast(MAX_CHAT_MESSAGES) // Keep only last 50 messages
                                     chatMessages = updatedMessages
                                     saveChatHistory(context, updatedMessages)
                                     isPromptLoading = false

@@ -63,10 +63,13 @@ cd GymNotes
 
 4. **Configure Gemini API Key** (Required for AI features):
    - Get your API key from [Google AI Studio](https://aistudio.google.com/app/apikey)
-   - Open `local.properties` in the project root
-   - Add this line: `GEMINI_API_KEY=your_actual_api_key_here`
-   - Replace `your_actual_api_key_here` with your actual Gemini API key
-   - **Note**: `local.properties` is already in `.gitignore`, so your API key won't be committed to version control
+   - The API key is stored securely in Firebase Secrets (not in the app code)
+   - Set the secret using Firebase CLI:
+     ```bash
+     firebase functions:secrets:set GEMINI_API_KEY
+     ```
+   - Enter your API key when prompted
+   - **Note**: The API key is never exposed to the client app. All Gemini API calls go through secure Firebase Functions with rate limiting.
 
 5. Build and run the app
 

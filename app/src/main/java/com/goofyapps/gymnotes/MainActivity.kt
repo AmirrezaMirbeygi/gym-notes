@@ -55,8 +55,6 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
-import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.tasks.await
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -123,7 +121,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlin.math.ln
 import kotlin.math.max
@@ -268,7 +268,6 @@ private const val KEY_CHAT_HISTORY = "chat_history"
 private const val KEY_ANALYSIS_RESULT = "analysis_result"
 private const val KEY_SCHEDULE = "schedule"
 private const val KEY_SCHEDULE_SUGGESTIONS = "schedule_suggestions"
-private const val KEY_LAST_CLOUD_BACKUP = "last_cloud_backup_timestamp"
 
 private enum class UnitSystem { METRIC, IMPERIAL }
 
@@ -931,222 +930,6 @@ private fun importAllDataFromString(jsonString: String): ImportResult {
     }
 }
 
-// -------------------- CLOUD BACKUP --------------------
-
-private const val CLOUD_BACKUP_COLLECTION = "user_backups"
-private const val MILLIS_PER_MONTH = 30L * 24L * 60L * 60L * 1000L // ~30 days
-
-/**
- * Get last cloud backup timestamp
- */
-private fun getLastCloudBackupTimestamp(context: Context): Long {
-    return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .getLong(KEY_LAST_CLOUD_BACKUP, 0L)
-}
-
-/**
- * Save last cloud backup timestamp
- */
-private fun saveLastCloudBackupTimestamp(context: Context, timestamp: Long) {
-    context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        .edit()
-        .putLong(KEY_LAST_CLOUD_BACKUP, timestamp)
-        .apply()
-}
-
-/**
- * Check if monthly backup is due (30 days since last backup)
- */
-private fun isMonthlyBackupDue(context: Context): Boolean {
-    val lastBackup = getLastCloudBackupTimestamp(context)
-    if (lastBackup == 0L) return true // Never backed up
-    val now = System.currentTimeMillis()
-    return (now - lastBackup) >= MILLIS_PER_MONTH
-}
-
-/**
- * Upload user data to Firestore cloud backup
- * Stores data under user's email, with monthly timestamp
- */
-suspend fun uploadToCloudBackup(
-    context: Context,
-    email: String,
-    dataString: String
-): Result<String> = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-    try {
-        if (email.isBlank()) {
-            return@withContext Result.failure(Exception("Email is required for cloud backup"))
-        }
-        
-        android.util.Log.d("CloudBackup", "Starting upload for email: $email")
-        android.util.Log.d("CloudBackup", "Data string length: ${dataString.length}")
-        
-        // Check if data is too large (Firestore has 1MB document limit)
-        if (dataString.length > 900000) { // Leave some margin
-            android.util.Log.w("CloudBackup", "Data size (${dataString.length} bytes) is very large, may cause issues")
-        }
-        
-        val db = FirebaseFirestore.getInstance()
-        
-        // Verify Firebase Auth is working
-        val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
-        val currentUser = auth.currentUser
-        if (currentUser == null || currentUser.email != email) {
-            android.util.Log.e("CloudBackup", "User not authenticated or email mismatch")
-            return@withContext Result.failure(Exception("Please sign in with Google to use cloud backup"))
-        }
-        
-        android.util.Log.d("CloudBackup", "User authenticated: ${currentUser.email}")
-        
-        // Test Firestore connectivity with a small write first (with short timeout)
-        try {
-            android.util.Log.d("CloudBackup", "Testing Firestore connectivity...")
-            val testDoc = db.collection("_test").document("connectivity")
-            kotlinx.coroutines.withTimeout(5000) { // 5 second test
-                testDoc.set(hashMapOf("test" to System.currentTimeMillis())).await()
-                testDoc.delete().await() // Clean up test document
-            }
-            android.util.Log.d("CloudBackup", "Firestore connectivity test passed")
-        } catch (e: Exception) {
-            android.util.Log.e("CloudBackup", "Firestore connectivity test failed", e)
-            return@withContext Result.failure(Exception("Unable to connect to backup service. Please check your internet connection."))
-        }
-        
-        val now = System.currentTimeMillis()
-        val monthKey = java.text.SimpleDateFormat("yyyy-MM", java.util.Locale.US).format(java.util.Date(now))
-        
-        // Document path: user_backups/{email}/months/{yyyy-MM}
-        val backupData = hashMapOf(
-            "email" to email,
-            "data" to dataString,
-            "timestamp" to now,
-            "month" to monthKey
-        )
-        
-        // Use email as document ID (sanitized) and month as subcollection
-        // Structure: user_backups/{email}/months/{yyyy-MM}
-        val emailDocRef = db.collection(CLOUD_BACKUP_COLLECTION).document(email)
-        val monthDocRef = emailDocRef.collection("months").document(monthKey)
-        
-        android.util.Log.d("CloudBackup", "Writing to Firestore: ${monthDocRef.path}")
-        
-        // Set with merge to update if exists - with longer timeout for actual data
-        try {
-            android.util.Log.d("CloudBackup", "Attempting Firestore write...")
-            kotlinx.coroutines.withTimeout(25000) { // 25 second timeout for actual upload
-                monthDocRef.set(backupData, SetOptions.merge()).await()
-            }
-            android.util.Log.d("CloudBackup", "Firestore write completed successfully")
-        } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
-            android.util.Log.e("CloudBackup", "Firestore error: ${e.code} - ${e.message}")
-            android.util.Log.e("CloudBackup", "Error details: ${e.cause?.message}")
-            // Provide user-friendly error messages (no technical details)
-            val userMessage = when (e.code) {
-                com.google.firebase.firestore.FirebaseFirestoreException.Code.PERMISSION_DENIED -> 
-                    "Unable to upload backup. Please try again later."
-                com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAVAILABLE -> 
-                    "Backup service is temporarily unavailable. Please try again later."
-                com.google.firebase.firestore.FirebaseFirestoreException.Code.DEADLINE_EXCEEDED -> 
-                    "Upload timed out. Please check your internet connection and try again."
-                else -> "Upload failed. Please try again later."
-            }
-            throw Exception(userMessage, e)
-        } catch (e: kotlinx.coroutines.TimeoutCancellationException) {
-            android.util.Log.e("CloudBackup", "Timeout waiting for Firestore response")
-            throw Exception("Upload timed out. Please check your internet connection and try again.", e)
-        } catch (e: java.util.concurrent.TimeoutException) {
-            android.util.Log.e("CloudBackup", "Timeout waiting for Firestore response")
-            throw Exception("Upload timed out. Please check your internet connection and try again.", e)
-        } catch (e: Exception) {
-            android.util.Log.e("CloudBackup", "Unexpected error during Firestore write", e)
-            e.printStackTrace()
-            throw e
-        }
-        
-        // Update last backup timestamp
-        saveLastCloudBackupTimestamp(context, now)
-        
-        android.util.Log.d("CloudBackup", "Backup completed successfully")
-        Result.success("Backup uploaded successfully")
-    } catch (e: Exception) {
-        android.util.Log.e("CloudBackup", "Error uploading cloud backup", e)
-        e.printStackTrace()
-        Result.failure(e)
-    }
-}
-
-/**
- * Retrieve latest cloud backup for user
- */
-suspend fun retrieveLatestCloudBackup(email: String): Result<String> = 
-    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-    try {
-        if (email.isBlank()) {
-            return@withContext Result.failure(Exception("Email is required"))
-        }
-        
-        val db = FirebaseFirestore.getInstance()
-        val emailDocRef = db.collection(CLOUD_BACKUP_COLLECTION).document(email)
-        val monthsCollection = emailDocRef.collection("months")
-        
-        // Get all monthly backups, sorted by timestamp descending
-        val querySnapshot = monthsCollection
-            .orderBy("timestamp", com.google.firebase.firestore.Query.Direction.DESCENDING)
-            .limit(1)
-            .get()
-            .await()
-        
-        if (querySnapshot.isEmpty) {
-            return@withContext Result.failure(Exception("No backup found for this email"))
-        }
-        
-        val doc = querySnapshot.documents[0]
-        val data = doc.data ?: return@withContext Result.failure(Exception("Backup data is empty"))
-        val dataString = data["data"] as? String ?: return@withContext Result.failure(Exception("Invalid backup format"))
-        
-        Result.success(dataString)
-    } catch (e: Exception) {
-        android.util.Log.e("MainActivity", "Error retrieving cloud backup", e)
-        Result.failure(e)
-    }
-}
-
-/**
- * Auto-upload backup if monthly backup is due
- */
-internal suspend fun checkAndUploadMonthlyBackup(
-    context: Context,
-    days: List<WorkoutDay>,
-    profile: Profile,
-    schedule: Schedule,
-    goals: Goals?,
-    email: String?
-) {
-    if (email.isNullOrBlank()) {
-        android.util.Log.d("MainActivity", "No email - skipping cloud backup")
-        return
-    }
-    
-    if (!isMonthlyBackupDue(context)) {
-        android.util.Log.d("MainActivity", "Monthly backup not due yet")
-        return
-    }
-    
-    try {
-        val dataString = exportAllDataToString(days, profile, schedule, goals, email)
-        val result = uploadToCloudBackup(context, email, dataString)
-        result.fold(
-            onSuccess = { 
-                android.util.Log.d("MainActivity", "Monthly backup uploaded: $it")
-            },
-            onFailure = { e ->
-                android.util.Log.e("MainActivity", "Failed to upload monthly backup", e)
-            }
-        )
-    } catch (e: Exception) {
-        android.util.Log.e("MainActivity", "Error in monthly backup check", e)
-    }
-}
 
 // -------------------- VIDEO --------------------
 
@@ -1205,15 +988,6 @@ private fun AppRoot() {
     var screen: Screen by remember { mutableStateOf(Screen.Workout) }
     var schedule by remember { mutableStateOf(loadSchedule(context)) }
     
-    // Monthly backup check on app start
-    val coroutineScope = rememberCoroutineScope()
-    LaunchedEffect(Unit) {
-        val auth = FirebaseAuth.getInstance()
-        val userEmail = auth.currentUser?.email
-        coroutineScope.launch {
-            checkAndUploadMonthlyBackup(context, days, profile, schedule, goals, userEmail)
-        }
-    }
     
     // Update schedule when it changes
     fun updateSchedule(newSchedule: Schedule) {
@@ -1302,12 +1076,6 @@ private fun AppRoot() {
                     onOpenDay = { idx -> screen = Screen.DayDetail(idx) },
                     onSave = { 
                         saveDays(context, days)
-                        // Trigger monthly backup check after saving
-                        coroutineScope.launch {
-                            val auth = FirebaseAuth.getInstance()
-                            val userEmail = auth.currentUser?.email
-                            checkAndUploadMonthlyBackup(context, days, profile, schedule, goals, userEmail)
-                        }
                     }
                 )
 
@@ -4003,9 +3771,9 @@ private fun SettingsScreen(
     var isSigningIn by remember { mutableStateOf(false) }
     var signInError by remember { mutableStateOf<String?>(null) }
     
-    // Firestore test state
-    var isTestingFirestore by remember { mutableStateOf(false) }
-    var firestoreTestResult by remember { mutableStateOf<String?>(null) }
+    // Firestore test state - COMMENTED OUT
+    // var isTestingFirestore by remember { mutableStateOf(false) }
+    // var firestoreTestResult by remember { mutableStateOf<String?>(null) }
     
     // Listen for auth state changes
     LaunchedEffect(Unit) {
@@ -4245,7 +4013,8 @@ private fun SettingsScreen(
             }
         }
         
-        // Firestore Test Section
+        // Firestore Test Section - COMMENTED OUT
+        /*
         Card(
             modifier = Modifier.fillMaxWidth()
         ) {
@@ -4294,6 +4063,7 @@ private fun SettingsScreen(
                 }
             }
         }
+        */
         
         // Profile Section
         Card(
@@ -4347,7 +4117,6 @@ private fun SettingsScreen(
         }
         
         // Data Management Section
-        var isUploadingBackup by remember { mutableStateOf(false) }
         val authForEmail = FirebaseAuth.getInstance()
         
         // Export launcher
@@ -4433,122 +4202,6 @@ private fun SettingsScreen(
                         modifier = Modifier.weight(1f)
                     ) {
                         Text("Import Data")
-                    }
-                }
-                
-                // Cloud backup button
-                if (currentUser != null && currentUser?.email != null) {
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    Text(
-                        "Cloud Backup",
-                        style = MaterialTheme.typography.titleSmall
-                    )
-                    Text(
-                        "Your data is automatically backed up monthly. You can also manually upload now.",
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.alpha(0.7f)
-                    )
-                    var backupError by remember { mutableStateOf<String?>(null) }
-                    var backupSuccess by remember { mutableStateOf(false) }
-                    
-                    if (backupError != null) {
-                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(
-                                backupError!!,
-                                color = MaterialTheme.colorScheme.error,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Text(
-                                "Tip: You can use 'Export Data' above to save a backup file instead.",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.alpha(0.7f)
-                            )
-                        }
-                    }
-                    if (backupSuccess) {
-                        Text(
-                            "Backup uploaded successfully!",
-                            color = MaterialTheme.colorScheme.primary,
-                            style = MaterialTheme.typography.bodySmall
-                        )
-                    }
-                    
-                    Button(
-                        onClick = {
-                            isUploadingBackup = true
-                            backupError = null
-                            backupSuccess = false
-                            coroutineScope.launch {
-                                try {
-                                    val email = currentUser?.email
-                                    if (email.isNullOrBlank()) {
-                                        isUploadingBackup = false
-                                        backupError = "Please sign in with Google to use cloud backup"
-                                        return@launch
-                                    }
-                                    
-                                    // Verify user is still authenticated
-                                    val authCheck = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser
-                                    if (authCheck == null || authCheck.email != email) {
-                                        isUploadingBackup = false
-                                        backupError = "Authentication expired. Please sign in again."
-                                        return@launch
-                                    }
-                                    
-                                    val dataString = exportAllDataToString(days, profile, schedule, goals, email)
-                                    
-                                    // Add timeout to prevent infinite hanging
-                                    val result = kotlinx.coroutines.withTimeoutOrNull(30000) { // 30 second timeout
-                                        uploadToCloudBackup(context, email, dataString)
-                                    }
-                                    
-                                    if (result == null) {
-                                        isUploadingBackup = false
-                                        backupError = "Upload timed out. Please check your internet connection and try again."
-                                        return@launch
-                                    }
-                                    
-                                    result.fold(
-                                        onSuccess = { 
-                                            isUploadingBackup = false
-                                            backupSuccess = true
-                                            backupError = null
-                                            android.util.Log.d("Settings", "Backup uploaded successfully")
-                                        },
-                                        onFailure = { e ->
-                                            isUploadingBackup = false
-                                            val errorMsg = when {
-                                                e.message?.contains("PERMISSION_DENIED", ignoreCase = true) == true -> 
-                                                    "Unable to upload backup. Please try again later."
-                                                e.message?.contains("UNAVAILABLE", ignoreCase = true) == true -> 
-                                                    "Backup service is temporarily unavailable. Please try again later."
-                                                e.message?.contains("network", ignoreCase = true) == true -> 
-                                                    "Network error. Please check your internet connection and try again."
-                                                e.message?.contains("timeout", ignoreCase = true) == true -> 
-                                                    "Upload timed out. Please check your internet connection and try again."
-                                                e.message?.contains("Authentication", ignoreCase = true) == true -> 
-                                                    "Please sign in with Google to use cloud backup."
-                                                else -> "Upload failed. Please try again later."
-                                            }
-                                            backupError = errorMsg
-                                            android.util.Log.e("Settings", "Backup failed", e)
-                                        }
-                                    )
-                                } catch (e: Exception) {
-                                    isUploadingBackup = false
-                                    backupError = "Error: ${e.message ?: "Unknown error occurred"}"
-                                    android.util.Log.e("Settings", "Backup exception", e)
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !isUploadingBackup
-                    ) {
-                        if (isUploadingBackup) {
-                            Text("Uploading...")
-                        } else {
-                            Text("Upload to Cloud Now")
-                        }
                     }
                 }
             }

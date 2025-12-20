@@ -3,29 +3,32 @@ service cloud.firestore {
   match /databases/{database}/documents {
     // Rate limits collection - only allow writes from server
     match /rateLimits/{document} {
-      // Only allow reads/writes from Firebase Functions (server-side)
-      // Client can read their own rate limit status
-      allow read: if request.auth != null || resource.data.deviceId == request.resource.data.deviceId;
+      // Document ID format: {userIdentifier}_{date} (e.g., "user123_2025-01-27" or "device456_2025-01-27")
+      // Only allow authenticated users to read their own rate limits (document ID starts with their UID)
+      // Unauthenticated users cannot read rate limits (they get info from backend response)
+      function isOwnRateLimit() {
+        return request.auth != null && 
+               document.matches('^' + request.auth.uid + '_.*$');
+      }
+      
+      allow read: if isOwnRateLimit();
       allow write: if false; // Only server can write
     }
     
     // Cooldowns collection - only allow writes from server
     match /cooldowns/{document} {
-      // Only allow reads/writes from Firebase Functions (server-side)
-      allow read: if request.auth != null;
+      // Document ID format: {userIdentifier}_{operation} (e.g., "user123_chat" or "device456_analysis")
+      // Only allow authenticated users to read their own cooldowns (document ID starts with their UID)
+      // Unauthenticated users cannot read cooldowns (they get info from backend response)
+      function isOwnCooldown() {
+        return request.auth != null && 
+               document.matches('^' + request.auth.uid + '_.*$');
+      }
+      
+      allow read: if isOwnCooldown();
       allow write: if false; // Only server can write
     }
     
-    // User backups collection - users can read/write their own backups
-    match /user_backups/{email} {
-      // Users can only access backups for their own email
-      allow read, write: if request.auth != null && request.auth.token.email == email;
-      
-      // Allow access to months subcollection
-      match /months/{month} {
-        allow read, write: if request.auth != null && request.auth.token.email == email;
-      }
-    }
   }
 }
 

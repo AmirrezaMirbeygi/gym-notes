@@ -33,12 +33,12 @@ console.log("Using Firestore databaseId: gymdb");
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Daily limits for different operations
-const DAILY_CHAT_LIMIT = 10; // 10 chat messages per day
+const DAILY_CHAT_LIMIT = 20; // 20 chat messages per day
 const DAILY_ANALYSIS_LIMIT = 1; // 1 analysis refresh per day
 const DAILY_SUGGESTIONS_LIMIT = 1; // 1 suggestions refresh per day
 
-// Cooldown between requests (15 seconds)
-const COOLDOWN_SECONDS = 15;
+// Cooldown between requests (30 seconds)
+const COOLDOWN_SECONDS = 30;
 
 /**
  * Check cooldown period for a user/device and operation type.

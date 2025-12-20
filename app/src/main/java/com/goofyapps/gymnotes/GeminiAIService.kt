@@ -73,8 +73,8 @@ class GeminiAIService(private val context: Context) {
             val installationId = FirebaseInstallations.getInstance().id.await()
             if (installationId.isNotBlank()) {
                 Log.d("GeminiAI", "Got Firebase Installation ID: $installationId")
-                // Store it for future use
-                prefs.edit().putString("device_id", installationId).apply()
+                // Store it for future use (use commit for reliability)
+                prefs.edit().putString("device_id", installationId).commit()
                 return@withContext installationId
             }
         } catch (e: Exception) {
@@ -90,8 +90,8 @@ class GeminiAIService(private val context: Context) {
             if (androidId != null && androidId.isNotBlank() && androidId != "9774d56d682e549c") {
                 // "9774d56d682e549c" is the default Android ID on some emulators, skip it
                 Log.d("GeminiAI", "Using Android ID: $androidId")
-                // Store it for future use
-                prefs.edit().putString("device_id", androidId).apply()
+                // Store it for future use (use commit for reliability)
+                prefs.edit().putString("device_id", androidId).commit()
                 return@withContext androidId
             }
         } catch (e: Exception) {
@@ -100,7 +100,7 @@ class GeminiAIService(private val context: Context) {
         
         // Last resort: generate a unique ID and store it (always works)
         deviceId = "device_${System.currentTimeMillis()}_${(0..9999).random()}"
-        prefs.edit().putString("device_id", deviceId).apply()
+        prefs.edit().putString("device_id", deviceId).commit()
         Log.d("GeminiAI", "Generated new device ID: $deviceId")
         deviceId
     }
@@ -193,15 +193,14 @@ class GeminiAIService(private val context: Context) {
             
             Log.d("GeminiAI", "==================================")
             
-            // TEMPORARILY COMMENTED OUT - Validation bypassed for debugging
-            // One more validation before sending
-            // val userIdValue = data["userId"] as? String
-            // val deviceIdValue = data["deviceId"] as? String
-            // if (userIdValue.isNullOrBlank() && deviceIdValue.isNullOrBlank()) {
-            //     Log.e("GeminiAI", "FATAL: About to send data without userId or deviceId!")
-            //     Log.e("GeminiAI", "userId: '$userIdValue', deviceId: '$deviceIdValue'")
-            //     return@withContext Result.failure(Exception("Internal error: Missing user identifier"))
-            // }
+            // Final validation before sending - ensure we have a user identifier
+            val userIdValue = data["userId"] as? String
+            val deviceIdValue = data["deviceId"] as? String
+            if (userIdValue.isNullOrBlank() && deviceIdValue.isNullOrBlank()) {
+                Log.e("GeminiAI", "FATAL: About to send data without userId or deviceId!")
+                Log.e("GeminiAI", "userId: '$userIdValue', deviceId: '$deviceIdValue'")
+                return@withContext Result.failure(Exception("Internal error: Missing user identifier"))
+            }
             
             val result = functions
                 .getHttpsCallable("geminiProxy")

@@ -1,33 +1,59 @@
-const functions = require('firebase-functions');
-const admin = require('firebase-admin');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+/**
+ * functions/index.js
+ * - Callable function: testFirestore
+ * - Callable function: geminiProxy (rate limited + cooldown)
+ * - Uses NAMED Firestore database: gymdb
+ *
+ * IMPORTANT:
+ * - Initialize admin ONLY ONCE.
+ * - Use getFirestore(app, "gymdb") for named database.
+ */
 
-// Initialize Firebase Admin
+const functions = require("firebase-functions");
+const admin = require("firebase-admin");
+const { getFirestore } = require("firebase-admin/firestore");
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
+// ✅ Initialize Admin once
 admin.initializeApp();
 
-// Get Gemini API key
-// TODO: Move to secrets when billing is enabled: firebase functions:secrets:set GEMINI_API_KEY
-// For now, using hardcoded value (works without billing, but less secure)
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBA1eIZ8IMhpMlrHSdggg_TXNovspMKoXE';
+// ✅ Connect to NAMED Firestore database "gymdb"
+const db = getFirestore(admin.app(), "gymdb");
+
+// Optional Firestore settings
+db.settings({ ignoreUndefinedProperties: true });
+
+// Log once (helps debugging)
+console.log("Admin initialized. Project:", process.env.GCLOUD_PROJECT);
+console.log("Using Firestore databaseId: gymdb");
+
+// Get Gemini API key from Firebase Secrets
+// Secret is set via: firebase functions:secrets:set GEMINI_API_KEY
+// It's automatically available as process.env.GEMINI_API_KEY when deployed
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Daily limits for different operations
-const DAILY_CHAT_LIMIT = 10;  // 10 chat messages per day
-const DAILY_ANALYSIS_LIMIT = 1;  // 1 analysis refresh per day
-const DAILY_SUGGESTIONS_LIMIT = 1;  // 1 suggestions refresh per day
+const DAILY_CHAT_LIMIT = 10; // 10 chat messages per day
+const DAILY_ANALYSIS_LIMIT = 1; // 1 analysis refresh per day
+const DAILY_SUGGESTIONS_LIMIT = 1; // 1 suggestions refresh per day
 
 // Cooldown between requests (15 seconds)
 const COOLDOWN_SECONDS = 15;
 
 /**
- * Check cooldown period for a user/device and operation type
- * Cooldown is per-operation, so you can switch between chat/analysis/suggestions
- * @param {string} userIdentifier - User ID (from Google) or device ID
- * @param {string} operation - Operation type: 'chat', 'analysis', or 'scheduleSuggestions'
- * @param {boolean} updateTimestamp - If true, update the cooldown timestamp (only on success)
+ * Check cooldown period for a user/device and operation type.
+ * Cooldown is per-operation, so you can switch between chat/analysis/suggestions.
+ * NOTE: This implementation "claims" cooldown immediately (fail-closed for concurrency).
+ *
+ * @param {string} userIdentifier
+ * @param {string} operation
+ * @param {boolean} updateTimestamp - if true, sets lastRequestTime immediately
  * @returns {Promise<{allowed: boolean, waitSeconds: number}>}
  */
 async function checkCooldown(userIdentifier, operation, updateTimestamp = true) {
-  const cooldownRef = admin.firestore().collection('cooldowns').doc(`${userIdentifier}_${operation}`);
+  const cooldownRef = db
+    .collection("cooldowns")
+    .doc(`${userIdentifier}_${operation}`);
 
   try {
     const doc = await cooldownRef.get();
@@ -35,334 +61,316 @@ async function checkCooldown(userIdentifier, operation, updateTimestamp = true) 
 
     if (doc.exists) {
       const data = doc.data();
-      let lastRequestTime = data.lastRequestTime;
-      
+      let lastRequestTime = data?.lastRequestTime;
+
       // Handle Firestore Timestamp if it's not a number
-      if (lastRequestTime && typeof lastRequestTime.toMillis === 'function') {
+      if (lastRequestTime && typeof lastRequestTime.toMillis === "function") {
         lastRequestTime = lastRequestTime.toMillis();
       }
-      
-      // Only check if we have a valid timestamp
-      if (lastRequestTime && typeof lastRequestTime === 'number') {
-        const timeSinceLastRequest = (now - lastRequestTime) / 1000; // seconds
-        
+
+      if (lastRequestTime && typeof lastRequestTime === "number") {
+        const timeSinceLastRequest = (now - lastRequestTime) / 1000;
         if (timeSinceLastRequest < COOLDOWN_SECONDS) {
-          const waitSeconds = Math.ceil(COOLDOWN_SECONDS - timeSinceLastRequest);
-          console.log(`Cooldown active: ${waitSeconds} seconds remaining for user ${userIdentifier}, operation ${operation}`);
+          const waitSeconds = Math.ceil(
+            COOLDOWN_SECONDS - timeSinceLastRequest
+          );
+          console.log(
+            `Cooldown active: ${waitSeconds}s remaining for ${userIdentifier}, op=${operation}`
+          );
           return { allowed: false, waitSeconds };
         }
       }
     }
 
-    // Only update timestamp if this is a successful request
     if (updateTimestamp) {
-      await cooldownRef.set({
-        lastRequestTime: now,
-      }, { merge: true });
+      await cooldownRef.set(
+        {
+          lastRequestTime: now,
+        },
+        { merge: true }
+      );
     }
 
     return { allowed: true, waitSeconds: 0 };
   } catch (error) {
-    console.error('Error checking cooldown:', error);
-    // On error, allow the request (fail open) but log it
-    return { allowed: true, waitSeconds: 0 };
-  }
-}
+    console.error("Error checking cooldown:", error?.code, error?.message || error);
 
-/**
- * Update cooldown timestamp after successful request
- * @param {string} userIdentifier - User ID (from Google) or device ID
- * @param {string} operation - Operation type
- */
-async function updateCooldown(userIdentifier, operation) {
-  const cooldownRef = admin.firestore().collection('cooldowns').doc(`${userIdentifier}_${operation}`);
-  try {
-    await cooldownRef.set({
-      lastRequestTime: Date.now(),
-    }, { merge: true });
-  } catch (error) {
-    console.error('Error updating cooldown:', error);
+    // Fail-open for cooldown errors (but still try to set timestamp)
+    if (updateTimestamp) {
+      try {
+        const now = Date.now();
+        await cooldownRef.set({ lastRequestTime: now }, { merge: true });
+        console.log(
+          `Cooldown timestamp set after error for ${userIdentifier}, op=${operation}: ${now}`
+        );
+      } catch (updateError) {
+        console.error("Error setting cooldown timestamp after error:", updateError);
+      }
+    }
+
+    return { allowed: true, waitSeconds: 0 };
   }
 }
 
 /**
  * Check and update rate limit for a user/device based on operation type
- * @param {string} userIdentifier - User ID (from Google) or device ID
- * @param {string} operation - Operation type: 'chat', 'analysis', or 'scheduleSuggestions'
+ * @param {string} userIdentifier
+ * @param {string} operation
  * @returns {Promise<{allowed: boolean, remaining: number, limit: number}>}
  */
 async function checkRateLimit(userIdentifier, operation) {
-  const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
-  
-  // Determine limit based on operation
+  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+
   let dailyLimit;
   let limitKey;
-  
+
   switch (operation) {
-    case 'chat':
+    case "chat":
       dailyLimit = DAILY_CHAT_LIMIT;
-      limitKey = 'chatCount';
+      limitKey = "chatCount";
       break;
-    case 'analysis':
+    case "analysis":
       dailyLimit = DAILY_ANALYSIS_LIMIT;
-      limitKey = 'analysisCount';
+      limitKey = "analysisCount";
       break;
-    case 'scheduleSuggestions':
+    case "scheduleSuggestions":
       dailyLimit = DAILY_SUGGESTIONS_LIMIT;
-      limitKey = 'suggestionsCount';
+      limitKey = "suggestionsCount";
       break;
     default:
       dailyLimit = DAILY_CHAT_LIMIT;
-      limitKey = 'chatCount';
+      limitKey = "chatCount";
   }
-  
+
   const limitDocId = `${userIdentifier}_${today}`;
-  const rateLimitRef = admin.firestore().collection('rateLimits').doc(limitDocId);
+  const rateLimitRef = db.collection("rateLimits").doc(limitDocId);
 
   try {
     const doc = await rateLimitRef.get();
     const data = doc.exists ? doc.data() : {};
-    const currentCount = data[limitKey] || 0;
+    const currentCount = data?.[limitKey] || 0;
 
-    // Check if limit is reached
     if (currentCount >= dailyLimit) {
       return { allowed: false, remaining: 0, limit: dailyLimit };
     }
 
-    // Increment counter for this operation
     const updateData = {
-      userIdentifier: userIdentifier,
+      userIdentifier,
       date: today,
       [limitKey]: currentCount + 1,
       lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
     };
-    
+
     await rateLimitRef.set(updateData, { merge: true });
 
-    return { allowed: true, remaining: dailyLimit - (currentCount + 1), limit: dailyLimit };
+    return {
+      allowed: true,
+      remaining: dailyLimit - (currentCount + 1),
+      limit: dailyLimit,
+    };
   } catch (error) {
-    console.error('Error checking rate limit:', error);
-    // On error, allow the request (fail open) but log it
+    console.error("Error checking rate limit:", error?.code, error?.message || error);
+
+    // If it's a database NOT_FOUND error (code 5), treat as critical
+    if (
+      error?.code === 5 ||
+      (typeof error?.message === "string" && error.message.includes("NOT_FOUND"))
+    ) {
+      console.error("CRITICAL: Firestore database NOT_FOUND in rate limit check");
+      throw new Error(
+        `Firestore database not accessible: ${error.message}. Check Firestore named DB 'gymdb' exists and IAM.`
+      );
+    }
+
+    // Fail-open on other errors
     return { allowed: true, remaining: dailyLimit, limit: dailyLimit };
   }
 }
 
 /**
- * Proxy function for Gemini API calls with rate limiting
- * Supports multiple operation types: chat, analysis, schedule suggestions
+ * Simple test function - writes "hello world" to Firestore (gymdb)
  */
-exports.geminiProxy = functions.https.onCall(
-  async (requestData, context) => {
-  // Firebase Functions wraps callable data - extract the actual data
-  // The data sent from Android is nested in requestData.data
-  const data = requestData.data || requestData;
-  
-  // DEBUG: Log what we receive (safe logging to avoid circular references)
-  console.log('=== BACKEND RECEIVED DATA ===');
-  console.log('Request data type:', typeof requestData);
-  console.log('Request data keys:', Object.keys(requestData || {}));
-  console.log('Extracted data type:', typeof data);
-  console.log('Extracted data keys:', Object.keys(data || {}));
-  console.log('Operation:', data?.operation);
-  console.log('Prompt:', data?.prompt);
-  console.log('Context type:', typeof data?.context);
-  if (data?.context) {
-    console.log('Context keys:', Object.keys(data.context || {}));
-    // Safely log context without circular references
-    const seen = new WeakSet();
-    try {
-      const safeContext = JSON.stringify(data.context, (key, value) => {
-        // Skip circular references and functions
-        if (typeof value === 'object' && value !== null) {
-          if (seen.has(value)) {
-            return '[Circular]';
-          }
-          seen.add(value);
-        }
-        if (typeof value === 'function') {
-          return '[Function]';
-        }
-        return value;
-      });
-      console.log('Context data:', safeContext);
-    } catch (e) {
-      console.log('Context (could not stringify):', String(e.message));
-      // Log individual context properties
-      if (data.context && typeof data.context === 'object') {
-        Object.keys(data.context).forEach(key => {
-          try {
-            console.log(`  ${key}:`, typeof data.context[key], Array.isArray(data.context[key]) ? `[Array(${data.context[key].length})]` : data.context[key]);
-          } catch (err) {
-            console.log(`  ${key}: [Error logging]`);
-          }
-        });
-      }
-    }
+exports.testFirestore = functions.https.onCall(async (data, context) => {
+  try {
+    console.log('Test: Writing "hello world" to Firestore (gymdb)...');
+
+    const testRef = db.collection("test").doc("hello");
+    await testRef.set({
+      message: "hello world",
+      timestamp: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    console.log('Success: Wrote "hello world" to Firestore (gymdb)');
+
+    return {
+      success: true,
+      message: 'Successfully wrote "hello world" to Firestore (gymdb)!',
+    };
+  } catch (error) {
+    console.error("Firestore test error:", error?.code, error?.message || error);
+    return {
+      success: false,
+      error: {
+        code: error?.code ?? null,
+        message: error?.message ?? String(error),
+      },
+      message: `Failed: ${error?.message ?? String(error)}`,
+    };
   }
-  console.log('============================');
-  
-  // Verify App Check (if enabled)
-  // Note: Uncomment when App Check is set up
-  // if (!context.app) {
-  //   throw new functions.https.HttpsError(
-  //     'failed-precondition',
-  //     'App check verification failed'
-  //   );
-  // }
+});
 
-  // TEMPORARILY COMMENTED OUT FOR DEBUGGING - Device ID validation
-  // Validate input - accept either userId (from Google Sign-In) or deviceId
-  // const userIdentifier = data.userId || data.deviceId;
-  // const identifierType = data.userId ? 'userId' : 'deviceId';
-  
-  // if (!userIdentifier || userIdentifier === '' || typeof userIdentifier !== 'string') {
-  //   console.error('Invalid user identifier received:', { 
-  //     userId: data.userId,
-  //     deviceId: data.deviceId,
-  //     type: typeof userIdentifier,
-  //     dataKeys: Object.keys(data || {})
-  //   });
-  //   throw new functions.https.HttpsError(
-  //     'invalid-argument',
-  //     'userId or deviceId is required and must be a non-empty string'
-  //   );
-  // }
-  
-  // Use a default identifier for now (bypassing validation)
-  const userIdentifier = data.userId || data.deviceId || 'debug-user-' + Date.now();
-  const identifierType = data.userId ? 'userId' : (data.deviceId ? 'deviceId' : 'debug');
-  console.log(`Request from ${identifierType}: ${userIdentifier} (validation bypassed)`);
+/**
+ * Proxy function for Gemini API calls with rate limiting
+ * Supports operations: chat, analysis, scheduleSuggestions
+ */
+exports.geminiProxy = functions.https.onCall(async (requestData, context) => {
+  // Callable functions typically pass data as requestData (v1) or requestData.data in some wrappers.
+  const data = requestData?.data || requestData;
 
-  // Check for operation - handle both data.operation and data.data.operation (in case of nested structure)
-  const operation = data.operation || (data.data && data.data.operation);
-  if (!operation) {
-    console.error('Operation missing! Data structure:', {
-      hasOperation: !!data.operation,
-      hasDataOperation: !!(data.data && data.data.operation),
-      dataKeys: Object.keys(data || {}),
-      dataType: typeof data
+  // Debug logging
+  console.log("=== BACKEND RECEIVED DATA ===");
+  try {
+    console.log("Extracted data keys:", Object.keys(data || {}));
+  } catch {
+    console.log("Extracted data keys: [unavailable]");
+  }
+  console.log("Operation:", data?.operation);
+  console.log("============================");
+
+  // Validate identifier: accept either userId or deviceId
+  const userIdentifier = data?.userId || data?.deviceId;
+  const identifierType = data?.userId ? "userId" : "deviceId";
+
+  if (!userIdentifier || typeof userIdentifier !== "string" || userIdentifier.trim() === "") {
+    console.error("Invalid user identifier received:", {
+      userId: data?.userId,
+      deviceId: data?.deviceId,
+      type: typeof userIdentifier,
     });
     throw new functions.https.HttpsError(
-      'invalid-argument',
-      'operation is required (chat, analysis, scheduleSuggestions). Received data keys: ' + Object.keys(data || {}).join(', ')
+      "invalid-argument",
+      "userId or deviceId is required and must be a non-empty string"
     );
   }
-  
-  // Use the operation we found
+
+  console.log(`Request from ${identifierType}: ${userIdentifier}`);
+
+  // Validate operation
+  const operation = data?.operation || (data?.data && data.data.operation);
+  if (!operation) {
+    throw new functions.https.HttpsError(
+      "invalid-argument",
+      "operation is required (chat, analysis, scheduleSuggestions)"
+    );
+  }
   data.operation = operation;
 
-  // TEMPORARILY COMMENTED OUT FOR DEBUGGING - Rate limiting and cooldown
-  // // Check cooldown first (15 seconds between successful requests of the same type)
-  // // Note: Cooldown is only checked, not updated here - it will be updated after success
-  // const cooldown = await checkCooldown(userIdentifier, data.operation, false); // false = don't update yet
-  // if (!cooldown.allowed) {
-  //   const operationName = data.operation === 'chat' ? 'chat message' :
-  //                        data.operation === 'analysis' ? 'analysis' :
-  //                        'suggestions';
-  //   throw new functions.https.HttpsError(
-  //     'resource-exhausted',
-  //     `Please wait ${cooldown.waitSeconds} second(s) before another ${operationName} request.`,
-  //     { waitSeconds: cooldown.waitSeconds, cooldown: COOLDOWN_SECONDS }
-  //   );
-  // }
+  // Cooldown (claims immediately to prevent parallel spam)
+  const cooldown = await checkCooldown(userIdentifier, data.operation, true);
+  if (!cooldown.allowed) {
+    const operationName =
+      data.operation === "chat"
+        ? "chat message"
+        : data.operation === "analysis"
+        ? "analysis"
+        : "suggestions";
 
-  // // Check daily rate limit for this specific operation
-  // const rateLimit = await checkRateLimit(userIdentifier, data.operation);
-  // if (!rateLimit.allowed) {
-  //   const operationName = data.operation === 'chat' ? 'chat messages' :
-  //                        data.operation === 'analysis' ? 'analysis refreshes' :
-  //                        'suggestions refreshes';
-  //   throw new functions.https.HttpsError(
-  //     'resource-exhausted',
-  //     `Daily limit of ${rateLimit.limit} ${operationName} reached. Please try again tomorrow.`,
-  //     { remaining: 0, limit: rateLimit.limit }
-  //   );
-  // }
-  
-  // Bypass rate limiting - use dummy values
-  const rateLimit = { remaining: 999, limit: 999 };
+    throw new functions.https.HttpsError(
+      "resource-exhausted",
+      `Please wait ${cooldown.waitSeconds} second(s) before another ${operationName} request.`,
+      { waitSeconds: cooldown.waitSeconds, cooldown: COOLDOWN_SECONDS }
+    );
+  }
 
-  // Initialize Gemini API
+  // Daily rate limits
+  const rateLimit = await checkRateLimit(userIdentifier, data.operation);
+  if (!rateLimit.allowed) {
+    const operationName =
+      data.operation === "chat"
+        ? "chat messages"
+        : data.operation === "analysis"
+        ? "analysis refreshes"
+        : "suggestions refreshes";
+
+    throw new functions.https.HttpsError(
+      "resource-exhausted",
+      `Daily limit of ${rateLimit.limit} ${operationName} reached. Please try again tomorrow.`,
+      { remaining: 0, limit: rateLimit.limit }
+    );
+  }
+
+  // Gemini API Key - check if secret is available
   if (!GEMINI_API_KEY) {
     throw new functions.https.HttpsError(
-      'internal',
-      'Gemini API key not configured'
+      "internal",
+      "Gemini API key not configured. Set it with: firebase functions:secrets:set GEMINI_API_KEY"
     );
   }
 
   const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+
   let model;
   let prompt;
 
   try {
-    // Route to appropriate model and build prompt based on operation
     switch (data.operation) {
-      case 'chat':
-        if (!data.prompt || typeof data.prompt !== 'string') {
+      case "chat":
+        if (!data.prompt || typeof data.prompt !== "string") {
           throw new functions.https.HttpsError(
-            'invalid-argument',
-            'prompt is required for chat operation and must be a string'
+            "invalid-argument",
+            "prompt is required for chat operation and must be a string"
           );
         }
-        model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         prompt = buildChatPrompt(data.prompt, data.context);
         break;
 
-      case 'analysis':
-        model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      case "analysis":
+        model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         prompt = buildAnalysisPrompt(data.context);
         break;
 
-      case 'scheduleSuggestions':
-        model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      case "scheduleSuggestions":
+        model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
         prompt = buildScheduleSuggestionPrompt(data.context);
         break;
 
       default:
         throw new functions.https.HttpsError(
-          'invalid-argument',
+          "invalid-argument",
           `Unknown operation: ${data.operation}`
         );
     }
 
-    // Call Gemini API
     const result = await model.generateContent(prompt);
-    const response = result.response;
-    const text = response.text();
+    const text = result?.response?.text?.() ?? "";
 
-    // TEMPORARILY COMMENTED OUT FOR DEBUGGING - Cooldown update
-    // Only update cooldown after successful API call
-    // await updateCooldown(userIdentifier, data.operation);
-
-    // Return result with rate limit info
     return {
       result: text,
       remaining: rateLimit.remaining,
       limit: rateLimit.limit,
     };
   } catch (error) {
-    console.error('Gemini API error:', error);
-    console.error('Error stack:', error.stack);
-    console.error('Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error)));
-    
-    // If it's a rate limit error from Gemini, pass it through
-    if (error.message && error.message.includes('quota')) {
+    console.error("Gemini API error:", error?.message || error);
+
+    if (typeof error?.message === "string" && error.message.includes("quota")) {
       throw new functions.https.HttpsError(
-        'resource-exhausted',
-        'API quota exceeded. Please try again later.',
+        "resource-exhausted",
+        "API quota exceeded. Please try again later.",
         { remaining: rateLimit.remaining, limit: rateLimit.limit }
       );
     }
-    
-    // If it's already an HttpsError, re-throw it
-    if (error instanceof functions.https.HttpsError) {
-      throw error;
-    }
+
+    if (error instanceof functions.https.HttpsError) throw error;
 
     throw new functions.https.HttpsError(
-      'internal',
-      `Gemini API error: ${error.message || 'Unknown error'}`,
-      { remaining: rateLimit.remaining, limit: rateLimit.limit, errorDetails: error.toString() }
+      "internal",
+      `Gemini API error: ${error?.message || "Unknown error"}`,
+      {
+        remaining: rateLimit.remaining,
+        limit: rateLimit.limit,
+        errorDetails: String(error),
+      }
     );
   }
 });
@@ -371,16 +379,16 @@ exports.geminiProxy = functions.https.onCall(
  * Build prompt for chat operation
  */
 function buildChatPrompt(userPrompt, context) {
-  // Validate userPrompt
-  if (!userPrompt || typeof userPrompt !== 'string') {
-    throw new Error('userPrompt is required and must be a string');
+  if (!userPrompt || typeof userPrompt !== "string") {
+    throw new Error("userPrompt is required and must be a string");
   }
-  
+
   const { days, currentScores, bodyFatPercent } = context || {};
-  
-  let contextText = 'You are Gymini, an AI fitness coach. Always refer to yourself as "Gymini" in your responses. You can use pronouns when referring to yourself.\n\n';
-  
-  if (currentScores && typeof currentScores === 'object') {
+
+  let contextText =
+    'You are Gymini, an AI fitness coach. Always refer to yourself as "Gymini" in your responses. You can use pronouns when referring to yourself.\n\n';
+
+  if (currentScores && typeof currentScores === "object") {
     contextText += `Current Muscle Group Scores (0-100):\n`;
     contextText += `- Chest: ${currentScores.chest || 0}/100\n`;
     contextText += `- Back: ${currentScores.back || 0}/100\n`;
@@ -389,17 +397,16 @@ function buildChatPrompt(userPrompt, context) {
     contextText += `- Arms: ${currentScores.arms || 0}/100\n`;
     contextText += `- Legs: ${currentScores.legs || 0}/100\n`;
   }
-  
-  if (bodyFatPercent && typeof bodyFatPercent === 'number') {
+
+  if (typeof bodyFatPercent === "number") {
     contextText += `- Body Fat: ${bodyFatPercent}%\n`;
   }
-  
-  if (days && Array.isArray(days) && days.length > 0) {
+
+  if (Array.isArray(days) && days.length > 0) {
     contextText += `\nWorkout History: ${days.length} workout days recorded.\n`;
   }
-  
+
   contextText += `\nUser Question: ${userPrompt}\n\nPlease provide a helpful response based on this context.`;
-  
   return contextText;
 }
 
@@ -407,14 +414,8 @@ function buildChatPrompt(userPrompt, context) {
  * Build prompt for comprehensive analysis
  */
 function buildAnalysisPrompt(context) {
-  const {
-    currentScores,
-    bodyFatPercent,
-    goals,
-    goalBodyFat,
-    days,
-    hasPhotos,
-  } = context || {};
+  const { currentScores, bodyFatPercent, goals, goalBodyFat, days, hasPhotos } =
+    context || {};
 
   let prompt = `You are Gymini, an AI fitness coach. Always refer to yourself as "Gymini" in your responses. You can use pronouns when referring to yourself.
 
@@ -439,7 +440,9 @@ Muscle Group Scores (0-100):
       prompt += `- Chest: ${goals.chest || currentScores?.chest || 0}/100\n`;
       prompt += `- Back: ${goals.back || currentScores?.back || 0}/100\n`;
       prompt += `- Core: ${goals.core || currentScores?.core || 0}/100\n`;
-      prompt += `- Shoulders: ${goals.shoulders || currentScores?.shoulders || 0}/100\n`;
+      prompt += `- Shoulders: ${
+        goals.shoulders || currentScores?.shoulders || 0
+      }/100\n`;
       prompt += `- Arms: ${goals.arms || currentScores?.arms || 0}/100\n`;
       prompt += `- Legs: ${goals.legs || currentScores?.legs || 0}/100\n`;
     }
@@ -449,10 +452,13 @@ Muscle Group Scores (0-100):
     prompt += `\n`;
   }
 
-  if (days && days.length > 0) {
+  if (Array.isArray(days) && days.length > 0) {
     prompt += `WORKOUT DATA:\n`;
     prompt += `- Total workout days: ${days.length}\n`;
-    const totalExercises = days.reduce((sum, day) => sum + (day.exercises?.length || 0), 0);
+    const totalExercises = days.reduce(
+      (sum, day) => sum + (day.exercises?.length || 0),
+      0
+    );
     prompt += `- Total exercises: ${totalExercises}\n\n`;
   }
 
@@ -474,35 +480,47 @@ Muscle Group Scores (0-100):
  */
 function buildScheduleSuggestionPrompt(context) {
   const { schedule, allExerciseCards, scores } = context || {};
-  const dayNames = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const dayNames = [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday",
+  ];
 
-  let scheduleText = 'Current Weekly Schedule:\n';
+  let scheduleText = "Current Weekly Schedule:\n";
   if (schedule) {
     for (let i = 0; i < 7; i++) {
       const items = schedule[i] || [];
       if (items.length > 0) {
-        const exerciseNames = items.map(item => {
-          if (item.type === 'rest') return 'Rest';
-          if (item.type === 'exercise' && allExerciseCards) {
-            const card = allExerciseCards.find(c => c.id === item.cardId);
-            return card ? card.equipmentName : 'Exercise';
+        const exerciseNames = items.map((item) => {
+          if (item.type === "rest") return "Rest";
+          if (item.type === "exercise" && allExerciseCards) {
+            const card = allExerciseCards.find((c) => c.id === item.cardId);
+            return card ? card.equipmentName : "Exercise";
           }
-          return 'Exercise';
+          return "Exercise";
         });
-        scheduleText += `${dayNames[i]}: ${exerciseNames.join(', ')}\n`;
+        scheduleText += `${dayNames[i]}: ${exerciseNames.join(", ")}\n`;
       }
     }
   }
 
-  const weakGroups = scores ? Object.keys(scores)
-    .filter(key => scores[key] < 50)
-    .map(key => key.charAt(0).toUpperCase() + key.slice(1))
-    .join(', ') : '';
+  const weakGroups = scores
+    ? Object.keys(scores)
+        .filter((key) => scores[key] < 50)
+        .map((key) => key.charAt(0).toUpperCase() + key.slice(1))
+        .join(", ")
+    : "";
 
-  const strongGroups = scores ? Object.keys(scores)
-    .filter(key => scores[key] >= 70)
-    .map(key => key.charAt(0).toUpperCase() + key.slice(1))
-    .join(', ') : '';
+  const strongGroups = scores
+    ? Object.keys(scores)
+        .filter((key) => scores[key] >= 70)
+        .map((key) => key.charAt(0).toUpperCase() + key.slice(1))
+        .join(", ")
+    : "";
 
   return `You are Gymini, an AI fitness coach. Provide brief schedule optimization suggestions (keep response under 200 words).
 
@@ -516,10 +534,8 @@ Muscle Group Scores:
 - Arms: ${scores?.arms || 0}/100
 - Legs: ${scores?.legs || 0}/100
 
-${weakGroups ? `Weakest Muscle Groups: ${weakGroups}\n` : ''}
-${strongGroups ? `Strongest Muscle Groups: ${strongGroups}\n` : ''}
+${weakGroups ? `Weakest Muscle Groups: ${weakGroups}\n` : ""}
+${strongGroups ? `Strongest Muscle Groups: ${strongGroups}\n` : ""}
 
 Based on the current schedule and muscle scores, suggest 2-3 actionable improvements to optimize the weekly workout routine. Focus on balancing muscle groups, ensuring adequate rest, and targeting weaker areas.`;
 }
-
-

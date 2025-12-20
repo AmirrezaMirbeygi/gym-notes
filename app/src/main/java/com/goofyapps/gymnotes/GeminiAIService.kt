@@ -532,4 +532,36 @@ class GeminiAIService(private val context: Context) {
         val analysisText: String,
         val generatedImageUri: Uri?
     )
+    
+    /**
+     * Test Firestore access - call this to verify Firestore is working
+     */
+    suspend fun testFirestore(): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val result = functions
+                .getHttpsCallable("testFirestore")
+                .call(emptyMap<String, Any>())
+                .await()
+
+            val resultData = result.data as? Map<*, *>
+            val success = resultData?.get("success") as? Boolean ?: false
+            val message = resultData?.get("message") as? String ?: "Unknown response"
+            
+            if (success) {
+                val tests = resultData?.get("tests") as? Map<*, *>
+                val testDetails = tests?.entries?.joinToString("\n") { "${it.key}: ${it.value}" } ?: ""
+                Log.d("GeminiAI", "Firestore test passed: $message\n$testDetails")
+                Result.success("✅ Firestore is working!\n\n$message\n\nTest results:\n$testDetails")
+            } else {
+                val error = resultData?.get("error") as? Map<*, *>
+                val errorCode = error?.get("code") as? Number
+                val errorMessage = error?.get("message") as? String ?: "Unknown error"
+                Log.e("GeminiAI", "Firestore test failed: $errorMessage (code: $errorCode)")
+                Result.failure(Exception("❌ Firestore test failed:\nCode: $errorCode\nMessage: $errorMessage"))
+            }
+        } catch (e: Exception) {
+            Log.e("GeminiAI", "Error calling testFirestore function", e)
+            Result.failure(Exception("Error testing Firestore: ${e.message}"))
+        }
+    }
 }

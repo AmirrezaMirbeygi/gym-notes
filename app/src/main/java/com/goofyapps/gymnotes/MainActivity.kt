@@ -4003,6 +4003,10 @@ private fun SettingsScreen(
     var isSigningIn by remember { mutableStateOf(false) }
     var signInError by remember { mutableStateOf<String?>(null) }
     
+    // Firestore test state
+    var isTestingFirestore by remember { mutableStateOf(false) }
+    var firestoreTestResult by remember { mutableStateOf<String?>(null) }
+    
     // Listen for auth state changes
     LaunchedEffect(Unit) {
         auth.addAuthStateListener { firebaseAuth ->
@@ -4236,6 +4240,56 @@ private fun SettingsScreen(
                                 }
                             }
                         }
+                    }
+                }
+            }
+        }
+        
+        // Firestore Test Section
+        Card(
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text(
+                    "Firestore Test",
+                    style = MaterialTheme.typography.titleMedium
+                )
+                Text(
+                    "Test if Firestore database is accessible from Firebase Functions",
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.alpha(0.7f)
+                )
+                if (firestoreTestResult != null) {
+                    Text(
+                        firestoreTestResult!!,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (firestoreTestResult!!.startsWith("✅")) 
+                            MaterialTheme.colorScheme.primary 
+                        else 
+                            MaterialTheme.colorScheme.error
+                    )
+                }
+                Button(
+                    onClick = {
+                        isTestingFirestore = true
+                        firestoreTestResult = null
+                        coroutineScope.launch {
+                            val geminiService = GeminiAIService(context)
+                            val result = geminiService.testFirestore()
+                            isTestingFirestore = false
+                            firestoreTestResult = result.getOrElse { it.message ?: "Unknown error" }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isTestingFirestore
+                ) {
+                    if (isTestingFirestore) {
+                        Text("Testing...")
+                    } else {
+                        Text("Test Firestore Access")
                     }
                 }
             }

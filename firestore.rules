@@ -9,6 +9,13 @@ service cloud.firestore {
       allow write: if false; // Only server can write
     }
     
+    // Cooldowns collection - only allow writes from server
+    match /cooldowns/{document} {
+      // Only allow reads/writes from Firebase Functions (server-side)
+      allow read: if request.auth != null;
+      allow write: if false; // Only server can write
+    }
+    
     // User backups collection - users can read/write their own backups
     match /user_backups/{email} {
       // Users can only access backups for their own email
